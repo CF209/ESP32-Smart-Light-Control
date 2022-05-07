@@ -20,13 +20,23 @@
 
 #include "lights_ledc.h"
 
-#define EXAMPLE_ESP_WIFI_SSID      "Pixel_5173"
-#define EXAMPLE_ESP_WIFI_PASS      "password"
-#define EXAMPLE_ESP_MAXIMUM_RETRY  10
+#define ESP_MAXIMUM_CONNECT_RETRY  10
+#define ESP_WIFI_CONNECT_WAIT      15000
+#define ESP_WIFI_AP_SSID           "esp_wifi_network"
+#define ESP_WIFI_AP_PASS           "password"
+#define ESP_WIFI_AP_CHANNEL        1
+#define ESP_WIFI_AP_MAX_STA_CONN   4
 
 #define ESP_HOSTNAME    "my-esp32"
 
+static const char *TAG = "wifi idf test";
+
 static int s_retry_num = 0;
+static uint8_t wifi_connected = 0;
+static uint8_t new_wifi_info = 0;
+
+static char esp_wifi_sta_ssid[33] = "Pixel_5173";
+static char esp_wifi_sta_pass[64] = "applesauce";
 
 typedef struct
 {
@@ -38,9 +48,15 @@ typedef struct
 
 static basic_auth_info_t auth_info = 
 {
-  .username = "cfarrah",
-  .password = "letmein",
+  .username = "admin",
+  .password = "admin",
 };
+
+char auth_buffer[512];
+
+//Read HTML files
+extern const char html_ota[] asm("_binary_ota_html_start");
+extern const char html_index[] asm("_binary_index_html_start");
 
 //-----------------------------------------------------------------------------
 static char *http_auth_basic( const char *username, const char *password )
@@ -66,87 +82,6 @@ static char *http_auth_basic( const char *username, const char *password )
 }
 
 //-----------------------------------------------------------------------------
-char auth_buffer[512];
-const char html_post_file[] = "\
-<style>\n\
-.progress {margin: 15px auto;  max-width: 500px;height: 30px;}\n\
-.progress .progress__bar {\n\
-  height: 100%; width: 1%; border-radius: 15px;\n\
-  background: repeating-linear-gradient(135deg,#336ffc,#036ffc 15px,#1163cf 15px,#1163cf 30px); }\n\
- .status {font-weight: bold; font-size: 30px;};\n\
-</style>\n\
-<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/2.2.1/css/bootstrap.min.css\">\n\
-<div class=\"well\" style=\"text-align: center;\">\n\
-  <div class=\"btn\" onclick=\"file_sel.click();\"><i class=\"icon-upload\" style=\"padding-right: 5px;\"></i>Upload Firmware</div>\n\
-  <div class=\"progress\"><div class=\"progress__bar\" id=\"progress\"></div></div>\n\
-  <div class=\"status\" id=\"status_div\"></div>\n\
-</div>\n\
-<input type=\"file\" id=\"file_sel\" onchange=\"upload_file()\" style=\"display: none;\">\n\
-<script>\n\
-function upload_file() {\n\
-  document.getElementById(\"status_div\").innerHTML = \"Upload in progress\";\n\
-  let data = document.getElementById(\"file_sel\").files[0];\n\
-  xhr = new XMLHttpRequest();\n\
-  xhr.open(\"POST\", \"/ota\", true);\n\
-  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');\n\
-  xhr.upload.addEventListener(\"progress\", function (event) {\n\
-     if (event.lengthComputable) {\n\
-    	 document.getElementById(\"progress\").style.width = (event.loaded / event.total) * 100 + \"%\";\n\
-     }\n\
-  });\n\
-  xhr.onreadystatechange = function () {\n\
-    if(xhr.readyState === XMLHttpRequest.DONE) {\n\
-      var status = xhr.status;\n\
-      if (status >= 200 && status < 400)\n\
-      {\n\
-        document.getElementById(\"status_div\").innerHTML = \"Upload accepted. Device will reboot.\";\n\
-      } else {\n\
-        document.getElementById(\"status_div\").innerHTML = \"Upload rejected!\";\n\
-      }\n\
-    }\n\
-  };\n\
-  xhr.send(data);\n\
-  return false;\n\
-}\n\
-</script>";
-
-const char html_index[] = "\
-<!DOCTYPE HTML><html style=\"background-color: skyblue; text-align: center;\">\n\
-<h1>ESP32 Wifi Test</h1>\n\
-<body>\n\
-   <form onsubmit=\"led_on()\"><input type=\"submit\" value=\"Click here to turn ON the LED\"></form><br>\n\
-   <form onsubmit=\"led_off()\"><input type=\"submit\" value=\"Click here to turn OFF the LED\"></form><br>\n\
-   <br>\n\
-   <br>\n\
-   <div>Change the Wifi network:</div><br>\n\
-   <form action=\"/WIFI\">\n\
-      SSID: <input type=\"text\" name=\"ssid\">\n\
-      <br>\n\
-      Password: <input type=\"text\" name=\"password\">\n\
-      <br>\n\
-      <input type=\"submit\" value=\"Connect\">\n\
-   </form>\n\
-   <br>\n\
-   <br>\n\
-   <form action=\"/ota\"><input type=\"submit\" value=\"Update Firmware\"></form><br>\n\
-<script>\n\
-function led_on() {\n\
-  xhr = new XMLHttpRequest();\n\
-  xhr.open('POST', '/', true);\n\
-  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');\n\
-  xhr.send('H');\n\
-};\n\
-function led_off() {\n\
-  xhr = new XMLHttpRequest();\n\
-  xhr.open('POST', '/', true);\n\
-  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');\n\
-  xhr.send('L');\n\
-};\n\
-</script>\n\
-</body>\n\
-</html>";
-
-//-----------------------------------------------------------------------------
 static esp_err_t basic_auth_get_handler( httpd_req_t *req )
 {
   basic_auth_info_t *basic_auth_info = req->user_ctx;
@@ -159,16 +94,16 @@ static esp_err_t basic_auth_get_handler( httpd_req_t *req )
       char *auth_credentials = http_auth_basic( basic_auth_info->username, basic_auth_info->password );
       if ( !strncmp( auth_credentials, auth_buffer, buf_len ) )
       {
-        printf( "Authenticated!\n" );
+        ESP_LOGI(TAG,  "Authenticated!\n" );
         httpd_resp_set_status( req, HTTPD_200 );
         httpd_resp_set_hdr( req, "Connection", "keep-alive" );
-        httpd_resp_send( req, html_post_file, strlen( html_post_file ) );
+        httpd_resp_send( req, html_ota, strlen( html_ota ) );
         return ESP_OK;
       }
     }
   }
 
-  printf( "Not authenticated\n" );
+  ESP_LOGI(TAG,  "Not authenticated\n" );
   httpd_resp_set_status( req, HTTPD_401 );
   httpd_resp_set_hdr( req, "Connection", "keep-alive" );
   httpd_resp_set_hdr( req, "WWW-Authenticate", "Basic realm=\"Hello\"" );
@@ -184,7 +119,7 @@ static esp_err_t ota_post_handler( httpd_req_t *req )
   httpd_resp_set_status( req, HTTPD_500 );    // Assume failure
   
   int ret, remaining = req->content_len;
-  printf( "Receiving\n" );
+  ESP_LOGI(TAG,  "Receiving\n" );
   
   esp_ota_handle_t update_handle = 0 ;
   const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
@@ -192,17 +127,17 @@ static esp_err_t ota_post_handler( httpd_req_t *req )
   
   if ( update_partition == NULL )
   {
-    printf( "Uh oh, bad things\n" );
+    ESP_LOGI(TAG,  "Uh oh, bad things\n" );
     goto return_failure;
   }
 
-  printf( "Writing partition: type %d, subtype %d, offset 0x%08x\n", update_partition-> type, update_partition->subtype, update_partition->address);
-  printf( "Running partition: type %d, subtype %d, offset 0x%08x\n", running->type,           running->subtype,          running->address);
+  ESP_LOGI(TAG,  "Writing partition: type %d, subtype %d, offset 0x%08x\n", update_partition-> type, update_partition->subtype, update_partition->address);
+  ESP_LOGI(TAG,  "Running partition: type %d, subtype %d, offset 0x%08x\n", running->type,           running->subtype,          running->address);
   esp_err_t err = ESP_OK;
   err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
   if (err != ESP_OK)
   {
-      printf( "esp_ota_begin failed (%s)", esp_err_to_name(err));
+      ESP_LOGI(TAG,  "esp_ota_begin failed (%s)", esp_err_to_name(err));
       goto return_failure;
   }
   while ( remaining > 0 )
@@ -229,13 +164,13 @@ static esp_err_t ota_post_handler( httpd_req_t *req )
     }
   }
 
-  printf( "Receiving done\n" );
+  ESP_LOGI(TAG,  "Receiving done\n" );
 
   // End response
   if ( ( esp_ota_end(update_handle)                   == ESP_OK ) && 
        ( esp_ota_set_boot_partition(update_partition) == ESP_OK ) )
   {
-    printf( "OTA Success?!\n Rebooting\n" );
+    ESP_LOGI(TAG,  "OTA Success?!\n Rebooting\n" );
     fflush( stdout );
 
     httpd_resp_set_status( req, HTTPD_200 );
@@ -246,7 +181,7 @@ static esp_err_t ota_post_handler( httpd_req_t *req )
     
     return ESP_OK;
   }
-  printf( "OTA End failed (%s)!\n", esp_err_to_name(err));
+  ESP_LOGI(TAG,  "OTA End failed (%s)!\n", esp_err_to_name(err));
 
 return_failure:
   if ( update_handle )
@@ -260,24 +195,6 @@ return_failure:
 }
 
 //-----------------------------------------------------------------------------
-esp_err_t http_404_error_handler( httpd_req_t *req, httpd_err_code_t err )
-{
-  if ( strcmp( "/hello", req->uri ) == 0 )
-  {
-    httpd_resp_send_err( req, HTTPD_404_NOT_FOUND, "/hello URI is not available" );
-    return ESP_OK;    // Return ESP_OK to keep underlying socket open
-  }
-  else if ( strcmp( "/echo", req->uri ) == 0 )
-  {
-    httpd_resp_send_err( req, HTTPD_404_NOT_FOUND, "/echo URI is not available" );    
-    return ESP_FAIL;    // Return ESP_FAIL to close underlying socket
-  }
-  
-  httpd_resp_send_err( req, HTTPD_404_NOT_FOUND, "404 error" );
-  return ESP_FAIL;  // For any other URI send 404 and close socket
-}
-
-//-----------------------------------------------------------------------------
 static esp_err_t index_handler( httpd_req_t *req )
 {
     httpd_resp_send(req, html_index, HTTPD_RESP_USE_STRLEN);
@@ -286,8 +203,8 @@ static esp_err_t index_handler( httpd_req_t *req )
 
 static esp_err_t led_handler( httpd_req_t *req )
 {
-    printf("Received LED POST request\n");
-    char content[100];
+    ESP_LOGI(TAG, "Received LED POST request\n");
+    char content[200];
 
     /* Truncate if content length larger than the buffer */
     size_t recv_size = MIN(req->content_len, sizeof(content));
@@ -306,7 +223,7 @@ static esp_err_t led_handler( httpd_req_t *req )
         return ESP_FAIL;
     }
 
-    printf("Content: %s\n", content);
+    ESP_LOGI(TAG, "Content: %s\n", content);
 
     if (content[0] == 'H') {
         lights_set_brightness(255, 0);
@@ -315,6 +232,47 @@ static esp_err_t led_handler( httpd_req_t *req )
     else if (content[0] == 'L') {
         lights_set_brightness(0, 0);
         lights_set_brightness(0, 1);
+    }
+    else if (strncmp(content, "{\"ssid\": \"", 10) == 0) {
+        char* ptr = content + 10;
+        uint8_t i = 0;
+        char new_ssid[33];
+        while (*ptr != '"' && i < 33) {
+            new_ssid[i] = *ptr;
+            i++;
+            ptr++;
+        }
+        new_ssid[i] = '\0';
+        if (*ptr != '"') {
+            ESP_LOGI(TAG, "SSID is too long. Max 32 characters");
+        }
+        else if (strncmp(ptr, "\", \"psk\": \"", 11) == 0) {
+            i = 0;
+            ptr += 11;
+            char new_pass[64];
+            while (*ptr != '"' && i < 64) {
+                new_pass[i] = *ptr;
+                i++;
+                ptr++;
+            }
+            new_pass[i] = '\0';
+            if (*ptr != '"') {
+                ESP_LOGI(TAG, "Password is too long. Max 63 characters");
+            }
+            else {
+                ESP_LOGI(TAG, "New SSID: %s", new_ssid);
+                ESP_LOGI(TAG, "New PSK: %s", new_pass);
+                strcpy(esp_wifi_sta_ssid, new_ssid);
+                strcpy(esp_wifi_sta_pass, new_pass);
+                new_wifi_info = 1;
+            }
+        }
+        else {
+            ESP_LOGI(TAG, "Found SSID but no password");
+        }
+    }
+    else {
+        ESP_LOGI(TAG, "Put request not recognized");
     }
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
@@ -328,7 +286,7 @@ static httpd_handle_t start_webserver( void )
   config.lru_purge_enable = true;
 
   // Start the httpd server
-  printf( "Starting server on port %d\n", config.server_port );
+  ESP_LOGI(TAG,  "Starting server on port %d\n", config.server_port );
 
   if ( httpd_start( &server, &config ) == ESP_OK )
   {
@@ -375,7 +333,7 @@ static httpd_handle_t start_webserver( void )
 
 static void sta_start_handler( void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data )
 {
-    printf("Connecting to WIFI");
+    ESP_LOGI(TAG, "Connecting to WIFI");
     esp_wifi_connect();
 }
 
@@ -386,18 +344,18 @@ static void disconnect_handler( void *arg, esp_event_base_t event_base, int32_t 
 
     if ( *server )
     {
-        printf( "Stopping webserver" );
+        ESP_LOGI(TAG,  "Stopping webserver" );
         httpd_stop( *server );
         *server = NULL;
     }
 
-    if (s_retry_num < EXAMPLE_ESP_MAXIMUM_RETRY) {
+    if (s_retry_num < ESP_MAXIMUM_CONNECT_RETRY) {
         esp_wifi_connect();
         s_retry_num++;
-        printf("Retry to connect to the AP");
+        ESP_LOGI(TAG, "Retry to connect to the AP");
     } else {
-        printf("Failed to connect to Wifi");
-        esp_restart();
+        wifi_connected = 0;
+        ESP_LOGI(TAG, "Failed to connect to Wifi");
     }
 
 }
@@ -405,13 +363,27 @@ static void disconnect_handler( void *arg, esp_event_base_t event_base, int32_t 
 //-----------------------------------------------------------------------------
 static void connect_handler( void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data )
 {
-    printf("Connected!\n");
+    ESP_LOGI(TAG, "Connected!\n");
+    wifi_connected = 1;
     httpd_handle_t *server = ( httpd_handle_t * ) arg;
 
     if ( *server == NULL )
     {
-        printf( "Starting webserver" );
+        ESP_LOGI(TAG,  "Starting webserver" );
         *server = start_webserver();
+    }
+}
+
+static void wifi_ap_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
+        ESP_LOGI(TAG, "station "MACSTR" join, AID=%d",
+                 MAC2STR(event->mac), event->aid);
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
+        ESP_LOGI(TAG, "station "MACSTR" leave, AID=%d",
+                 MAC2STR(event->mac), event->aid);
     }
 }
 
@@ -421,12 +393,12 @@ static void initialise_mdns(void)
     //initialize mDNS service
     esp_err_t err = mdns_init();
     if (err) {
-        printf("MDNS Init failed: %d\n", err);
+        ESP_LOGI(TAG, "MDNS Init failed: %d\n", err);
         return;
     }
     //set mDNS hostname (required if you want to advertise services)
     mdns_hostname_set(ESP_HOSTNAME);
-    printf("mdns hostname set to: [%s]", ESP_HOSTNAME);
+    ESP_LOGI(TAG, "mdns hostname set to: [%s]", ESP_HOSTNAME);
     //set default mDNS instance name
     mdns_instance_name_set(ESP_HOSTNAME);
 }
@@ -434,13 +406,14 @@ static void initialise_mdns(void)
 //-----------------------------------------------------------------------------
 static void wifi_task( void *Param )
 {
-    printf( "Wifi task starting\n" );
+    ESP_LOGI(TAG,  "Wifi task starting\n" );
   
     httpd_handle_t server = NULL;
   
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
     initialise_mdns();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -450,28 +423,84 @@ static void wifi_task( void *Param )
     esp_event_handler_instance_t instance_sta_start;
     esp_event_handler_instance_t instance_connected;
     esp_event_handler_instance_t instance_disconnected;
+    esp_event_handler_instance_t instance_ap_handler;
     ESP_ERROR_CHECK(esp_event_handler_instance_register( WIFI_EVENT, WIFI_EVENT_STA_START, &sta_start_handler, NULL, &instance_sta_start ));
     ESP_ERROR_CHECK(esp_event_handler_instance_register( IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, &server, &instance_connected ));
     ESP_ERROR_CHECK(esp_event_handler_instance_register( WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server, &instance_disconnected ));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register( WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED, &wifi_ap_handler, NULL, &instance_ap_handler));
 
-    wifi_config_t wifi_config = {
+    wifi_config_t wifi_sta_config = {
         .sta = {
-            .ssid = EXAMPLE_ESP_WIFI_SSID,
-            .password = EXAMPLE_ESP_WIFI_PASS,
+            //.ssid = esp_wifi_sta_ssid,
+            //.password = esp_wifi_sta_pass,
             /* Setting the threshold to WPA2 means the ESP will only connect to
             networks with WPA2 security or stronger */
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
-    ESP_ERROR_CHECK(esp_wifi_start() );
+    memcpy(wifi_sta_config.sta.ssid, esp_wifi_sta_ssid, 32);
+    memcpy(wifi_sta_config.sta.password, esp_wifi_sta_pass, 64);
+    wifi_config_t wifi_ap_config = {
+        .ap = {
+            .ssid = ESP_WIFI_AP_SSID,
+            .ssid_len = strlen(ESP_WIFI_AP_SSID),
+            .channel = ESP_WIFI_AP_CHANNEL,
+            .password = ESP_WIFI_AP_PASS,
+            .max_connection = ESP_WIFI_AP_MAX_STA_CONN,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK,
+        },
+    };
+    if (strlen(ESP_WIFI_AP_PASS) == 0) {
+        wifi_ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
 
-    printf("wifi_init_sta finished");
+    if (strcmp(esp_wifi_sta_ssid, "") != 0) {
+        ESP_LOGI(TAG, "Wifi info detected. Starting in STA mode");
+
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config) );
+        ESP_ERROR_CHECK(esp_wifi_start() );
+
+        ESP_LOGI(TAG, "wifi_init_sta finished");
+
+        vTaskDelay(ESP_WIFI_CONNECT_WAIT / portTICK_RATE_MS);
+    }
+    else {
+        ESP_LOGI(TAG, "No Wifi info detected");
+    }
     
-    const uint32_t task_delay_ms = 10;
+    const uint32_t task_delay_ms = 1000;
     while(1) {
-        vTaskDelay( task_delay_ms / portTICK_RATE_MS);
+        if (wifi_connected == 0) {
+            ESP_LOGI(TAG, "Wifi Disconnected! Switching to AP mode");
+            ESP_ERROR_CHECK(esp_wifi_stop() );
+            ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP) );
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config) );
+            ESP_ERROR_CHECK(esp_wifi_start() );
+            if (server == NULL) {
+                ESP_LOGI(TAG,  "Starting webserver");
+                server = start_webserver();
+            }
+            wifi_connected = 1;
+        }
+        if (new_wifi_info == 1) {
+            wifi_connected = 0;
+            ESP_LOGI(TAG, "New Wifi info detected. Switching to STA mode");
+            if (server){
+                ESP_LOGI(TAG,  "Stopping webserver" );
+                httpd_stop(server);
+                server = NULL;
+            }
+            memcpy(wifi_sta_config.sta.ssid, esp_wifi_sta_ssid, 32);
+            memcpy(wifi_sta_config.sta.password, esp_wifi_sta_pass, 64);
+            ESP_ERROR_CHECK(esp_wifi_stop() );
+            ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config) );
+            ESP_ERROR_CHECK(esp_wifi_start() );
+            new_wifi_info = 0;
+            vTaskDelay(ESP_WIFI_CONNECT_WAIT / portTICK_RATE_MS);
+        }
+        vTaskDelay(task_delay_ms / portTICK_RATE_MS);
     }
     
 }
@@ -479,22 +508,6 @@ static void wifi_task( void *Param )
 //-----------------------------------------------------------------------------
 static void ota_task(void *Param)
 {
-//  #define HASH_LEN 32         // SHA-256 digest length
-//  uint8_t sha_256[HASH_LEN] = { 0 };
-//  esp_partition_t partition;
-// 
-//  partition.address   = ESP_PARTITION_TABLE_OFFSET;
-//  partition.size      = ESP_PARTITION_TABLE_MAX_LEN;
-//  partition.type      = ESP_PARTITION_TYPE_DATA;
-//  esp_partition_get_sha256(&partition, sha_256);
-// 
-//  partition.address   = ESP_BOOTLOADER_OFFSET;
-//  partition.size      = ESP_PARTITION_TABLE_OFFSET;
-//  partition.type      = ESP_PARTITION_TYPE_APP;
-//  esp_partition_get_sha256(&partition, sha_256);
-// 
-//  esp_partition_get_sha256(esp_ota_get_running_partition(), sha_256);
-  
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state;
     if ( esp_ota_get_state_partition(running, &ota_state) == ESP_OK ) {
@@ -515,8 +528,8 @@ static void ota_task(void *Param)
 void app_main( void )
 { 
     esp_err_t error;
-    printf( "****************************\n" );
-    printf( "Application task starting\n" );
+    ESP_LOGI(TAG,  "****************************\n" );
+    ESP_LOGI(TAG,  "Application task starting\n" );
 
     // Initialize NVS.
     error = nvs_flash_init();

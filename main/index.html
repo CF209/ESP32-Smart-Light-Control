@@ -1,0 +1,43 @@
+<!DOCTYPE HTML><html style="background-color: skyblue; text-align: center;">
+<h1>ESP32 Wifi Test</h1>
+<body>
+   <form onsubmit="led_on()"><input type="submit" value="Click here to turn ON the LED"></form><br>
+   <form onsubmit="led_off()"><input type="submit" value="Click here to turn OFF the LED"></form><br>
+   <br>
+   <br>
+   <div>Change the Wifi network:</div><br>
+   <form onsubmit="new_wifi()">
+      SSID: <input type="text" name="ssid" id="ssid">
+      <br>
+      Password: <input type="text" name="password" id="password">
+      <br>
+      <input type="submit" value="Connect">
+   </form>
+   <br>
+   <br>
+   <form action="/ota"><input type="submit" value="Update Firmware"></form><br>
+<script>
+function led_on() {
+  xhr = new XMLHttpRequest();
+  xhr.open('POST', '/', true);
+  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+  xhr.send('H');
+};
+function led_off() {
+  xhr = new XMLHttpRequest();
+  xhr.open('POST', '/', true);
+  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+  xhr.send('L');
+};
+function new_wifi() {
+  let new_ssid = document.getElementById("ssid").value;
+  let new_password = document.getElementById("password").value;
+  var data = `{"ssid": "${new_ssid}", "psk": "${new_password}"}`;
+  xhr = new XMLHttpRequest();
+  xhr.open('POST', '/', true);
+  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+  xhr.send(data);
+};
+</script>
+</body>
+</html>
