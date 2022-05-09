@@ -1,0 +1,4 @@
+build/
+Makefile
+sdkconfig.old
+main/component.mk

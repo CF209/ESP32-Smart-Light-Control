@@ -12,6 +12,9 @@
     "idf.toolsPath": "/Users/chris/.espressif",
     "files.associations": {
         "esp_tls_crypto.h": "c",
-        "functional": "c"
+        "functional": "c",
+        "*.ipp": "c",
+        "*.inc": "c",
+        "freertos.h": "c"
     }
 }

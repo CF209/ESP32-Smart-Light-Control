@@ -18,45 +18,156 @@
 #include "esp_err.h"
 #include "mdns.h"
 
+// Moved the lights functions to a separate file to clean up code
 #include "lights_ledc.h"
 
+// Specify the max time and max number of retries for connecting
+// to wifi before switching to AP mode, whichever comes first
 #define ESP_MAXIMUM_CONNECT_RETRY  10
 #define ESP_WIFI_CONNECT_WAIT      15000
+
+// Wifi data for AP mode
 #define ESP_WIFI_AP_SSID           "esp_wifi_network"
 #define ESP_WIFI_AP_PASS           "password"
 #define ESP_WIFI_AP_CHANNEL        1
 #define ESP_WIFI_AP_MAX_STA_CONN   4
 
+// Hostname for mDNS service. "my-esp32" becomes http://my-esp32.local/
 #define ESP_HOSTNAME    "my-esp32"
 
+// Keys for storing wifi data in NVS so it is preserved on reboot
+#define ESP_NVS_NAMESPACE "wifi_data"
+#define ESP_NVS_SSID_KEY  "wifi_ssid"
+#define ESP_NVS_PASS_KEY  "wifi_pass"
+
+// Debug tag for log statements
 static const char *TAG = "wifi idf test";
 
-static int s_retry_num = 0;
+// Tracks the number of retries for connecting to Wifi
+static int wifi_retry_count = 0;
+
+// Flags to track if wifi is connected and to trigger a reconnect if new data is entered
 static uint8_t wifi_connected = 0;
 static uint8_t new_wifi_info = 0;
 
-static char esp_wifi_sta_ssid[33] = "Pixel_5173";
-static char esp_wifi_sta_pass[64] = "applesauce";
+// Length of wifi data char arrays
+#define WIFI_SSID_LENGTH 33
+#define WIFI_PASS_LENGTH 64
 
+// Char arrays for storing wifi data
+// If initialized here, NVS data will be ignored
+// To initialize from NVS leave as ""
+static char esp_wifi_sta_ssid[WIFI_SSID_LENGTH] = "";
+static char esp_wifi_sta_pass[WIFI_PASS_LENGTH] = "";
+
+// Struct to store authorization details for OTA
 typedef struct
 {
   const char *username;
   const char *password;
 } basic_auth_info_t;
 
-#define HTTPD_401      "401 UNAUTHORIZED"           /*!< HTTP Response 401 */
-
+// Username and password for OTA updates
 static basic_auth_info_t auth_info = 
 {
   .username = "admin",
   .password = "admin",
 };
 
+#define HTTPD_401      "401 UNAUTHORIZED"           /*!< HTTP Response 401 */
+
 char auth_buffer[512];
 
-//Read HTML files
+//Read HTML files into char arrays
 extern const char html_ota[] asm("_binary_ota_html_start");
 extern const char html_index[] asm("_binary_index_html_start");
+
+
+// Reads saved wifi info from NVS and stores it in global variables
+// esp_wifi_sta_ssid and esp_wifi_sta_pass
+static void read_wifi_info_from_nvs()
+{
+    ESP_LOGI(TAG, "Opening Non-Volatile Storage (NVS) handle... ");
+    nvs_handle_t wifi_nvs_handle;
+    esp_err_t err = nvs_open(ESP_NVS_NAMESPACE, NVS_READONLY, &wifi_nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Reading SSID from NVS ... ");
+        size_t required_length = sizeof(esp_wifi_sta_ssid);
+        err = nvs_get_str(wifi_nvs_handle, ESP_NVS_SSID_KEY, esp_wifi_sta_ssid, &required_length);
+        switch (err) {
+            case ESP_OK:
+                ESP_LOGI(TAG, "SSID = %s\n", esp_wifi_sta_ssid);
+                break;
+            case ESP_ERR_NVS_NOT_FOUND:
+                ESP_LOGI(TAG, "The SSID value is not initialized yet!\n");
+                break;
+            default :
+                ESP_LOGI(TAG, "Error (%s) reading!\n", esp_err_to_name(err));
+        }
+        ESP_LOGI(TAG, "Reading password from NVS ... ");
+        required_length = sizeof(esp_wifi_sta_pass);
+        err = nvs_get_str(wifi_nvs_handle, ESP_NVS_PASS_KEY, esp_wifi_sta_pass, &required_length);
+        switch (err) {
+            case ESP_OK:
+                ESP_LOGI(TAG, "Password = %s\n", esp_wifi_sta_pass);
+                break;
+            case ESP_ERR_NVS_NOT_FOUND:
+                ESP_LOGI(TAG, "The SSID value is not initialized yet!\n");
+                break;
+            default :
+                ESP_LOGI(TAG, "Error (%s) reading!\n", esp_err_to_name(err));
+        }
+        nvs_close(wifi_nvs_handle);
+    }
+}
+
+// Saves wifi data stored in global variables
+// esp_wifi_sta_ssid and esp_wifi_sta_pass to NVS
+static void save_wifi_info_to_nvs()
+{
+    ESP_LOGI(TAG, "Opening Non-Volatile Storage (NVS) handle... ");
+    nvs_handle_t wifi_nvs_handle;
+    esp_err_t err = nvs_open(ESP_NVS_NAMESPACE, NVS_READWRITE, &wifi_nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
+    } else {
+        // Save SSID
+        ESP_LOGI(TAG, "Saving SSID to NVS ... ");
+        err = nvs_set_str(wifi_nvs_handle, ESP_NVS_SSID_KEY, esp_wifi_sta_ssid);
+        switch (err) {
+            case ESP_OK:
+                ESP_LOGI(TAG, "SSID saved!");
+                break;
+            default :
+                ESP_LOGI(TAG, "Error (%s) writing!\n", esp_err_to_name(err));
+        }
+        // Save password
+        ESP_LOGI(TAG, "Saving password to NVS ... ");
+        err = nvs_set_str(wifi_nvs_handle, ESP_NVS_PASS_KEY, esp_wifi_sta_pass);
+        switch (err) {
+            case ESP_OK:
+                ESP_LOGI(TAG, "Password saved!");
+                break;
+            default :
+                ESP_LOGI(TAG, "Error (%s) wiriting!\n", esp_err_to_name(err));
+        }
+        ESP_LOGI(TAG, "Committing updates in NVS ... ");
+        err = nvs_commit(wifi_nvs_handle);
+        switch (err) {
+            case ESP_OK:
+                ESP_LOGI(TAG, "Done");
+                break;
+            default :
+                ESP_LOGI(TAG, "Error (%s)\n", esp_err_to_name(err));
+        }
+        nvs_close(wifi_nvs_handle);
+    }
+}
+
+// Borrowed the HTTP authorization and OTA code in the
+// next few functions from another project
 
 //-----------------------------------------------------------------------------
 static char *http_auth_basic( const char *username, const char *password )
@@ -194,24 +305,31 @@ return_failure:
   return ESP_FAIL;
 }
 
-//-----------------------------------------------------------------------------
-static esp_err_t index_handler( httpd_req_t *req )
+// Get handler for index page
+// Just sends the index HTML file
+static esp_err_t index_get_handler( httpd_req_t *req )
 {
     httpd_resp_send(req, html_index, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
-static esp_err_t led_handler( httpd_req_t *req )
+// Post handler for index page
+// Depending on the content of the request:
+// - Turns on/off the LED
+// - Updates the wifi data
+static esp_err_t index_post_handler( httpd_req_t *req )
 {
-    ESP_LOGI(TAG, "Received LED POST request\n");
+    ESP_LOGI(TAG, "Received index POST request\n");
+
     char content[200];
 
-    /* Truncate if content length larger than the buffer */
+    // Truncate if content length larger than the buffer
     size_t recv_size = MIN(req->content_len, sizeof(content));
 
+    // Read content from post request
     int ret = httpd_req_recv(req, content, recv_size);
-    if (ret <= 0) {  /* 0 return value indicates connection closed */
-        /* Check if timeout occurred */
+    if (ret <= 0) {  // 0 return value indicates connection closed
+        // Check if timeout occurred */
         if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
             /* In case of timeout one can choose to retry calling
              * httpd_req_recv(), but to keep it simple, here we
@@ -225,6 +343,8 @@ static esp_err_t led_handler( httpd_req_t *req )
 
     ESP_LOGI(TAG, "Content: %s\n", content);
 
+    // Respond to the request depending on the content
+    // H or L indicates a change to the LEDs
     if (content[0] == 'H') {
         lights_set_brightness(255, 0);
         lights_set_brightness(255, 1);
@@ -233,11 +353,12 @@ static esp_err_t led_handler( httpd_req_t *req )
         lights_set_brightness(0, 0);
         lights_set_brightness(0, 1);
     }
+    // Decode the JSON format for the wifi info
     else if (strncmp(content, "{\"ssid\": \"", 10) == 0) {
         char* ptr = content + 10;
         uint8_t i = 0;
-        char new_ssid[33];
-        while (*ptr != '"' && i < 33) {
+        char new_ssid[WIFI_SSID_LENGTH];
+        while (*ptr != '"' && i < WIFI_SSID_LENGTH) {
             new_ssid[i] = *ptr;
             i++;
             ptr++;
@@ -249,8 +370,8 @@ static esp_err_t led_handler( httpd_req_t *req )
         else if (strncmp(ptr, "\", \"psk\": \"", 11) == 0) {
             i = 0;
             ptr += 11;
-            char new_pass[64];
-            while (*ptr != '"' && i < 64) {
+            char new_pass[WIFI_PASS_LENGTH];
+            while (*ptr != '"' && i < WIFI_PASS_LENGTH) {
                 new_pass[i] = *ptr;
                 i++;
                 ptr++;
@@ -260,10 +381,13 @@ static esp_err_t led_handler( httpd_req_t *req )
                 ESP_LOGI(TAG, "Password is too long. Max 63 characters");
             }
             else {
+                // If wifi info is ok, save it to the global variables,
+                // save it to NVS, and set the new_wifi_info flag to trigger a reconnect
                 ESP_LOGI(TAG, "New SSID: %s", new_ssid);
                 ESP_LOGI(TAG, "New PSK: %s", new_pass);
                 strcpy(esp_wifi_sta_ssid, new_ssid);
                 strcpy(esp_wifi_sta_pass, new_pass);
+                save_wifi_info_to_nvs();
                 new_wifi_info = 1;
             }
         }
@@ -278,7 +402,7 @@ static esp_err_t led_handler( httpd_req_t *req )
     return ESP_OK;
 }
 
-//-----------------------------------------------------------------------------
+// Starts the webserver after wifi is connected or AP mode is started
 static httpd_handle_t start_webserver( void )
 {
   httpd_handle_t server = NULL;
@@ -312,7 +436,7 @@ static httpd_handle_t start_webserver( void )
     {
       .uri       = "/",
       .method    = HTTP_GET,
-      .handler   = index_handler,
+      .handler   = index_get_handler,
       .user_ctx  = NULL
     };
     httpd_register_uri_handler( server, &index );
@@ -321,7 +445,7 @@ static httpd_handle_t start_webserver( void )
     {
       .uri       = "/",
       .method    = HTTP_POST,
-      .handler   = led_handler,
+      .handler   = index_post_handler,
       .user_ctx  = NULL
     };
     httpd_register_uri_handler( server, &index_post );
@@ -331,13 +455,14 @@ static httpd_handle_t start_webserver( void )
   return NULL;
 }
 
+// Interrupt to start connecting to Wifi once the wifi station mode is started
 static void sta_start_handler( void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data )
 {
     ESP_LOGI(TAG, "Connecting to WIFI");
     esp_wifi_connect();
 }
 
-//-----------------------------------------------------------------------------
+// If wifi disconnects, stop the webserver if it's running and retry to connect
 static void disconnect_handler( void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data )
 {
     httpd_handle_t *server = ( httpd_handle_t * ) arg;
@@ -349,9 +474,9 @@ static void disconnect_handler( void *arg, esp_event_base_t event_base, int32_t 
         *server = NULL;
     }
 
-    if (s_retry_num < ESP_MAXIMUM_CONNECT_RETRY) {
+    if (wifi_retry_count < ESP_MAXIMUM_CONNECT_RETRY) {
         esp_wifi_connect();
-        s_retry_num++;
+        wifi_retry_count++;
         ESP_LOGI(TAG, "Retry to connect to the AP");
     } else {
         wifi_connected = 0;
@@ -360,7 +485,7 @@ static void disconnect_handler( void *arg, esp_event_base_t event_base, int32_t 
 
 }
 
-//-----------------------------------------------------------------------------
+// If wifi connects, set the wifi_connected flag and start the webserver
 static void connect_handler( void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data )
 {
     ESP_LOGI(TAG, "Connected!\n");
@@ -374,6 +499,7 @@ static void connect_handler( void *arg, esp_event_base_t event_base, int32_t eve
     }
 }
 
+// Wifi AP event handler. Just logs debug info when wifi stations connect/disconnect
 static void wifi_ap_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
     if (event_id == WIFI_EVENT_AP_STACONNECTED) {
@@ -387,6 +513,7 @@ static void wifi_ap_handler(void* arg, esp_event_base_t event_base, int32_t even
     }
 }
 
+// Initializes mDNS service to set a hostname for the esp32
 static void initialise_mdns(void)
 {
 
@@ -403,7 +530,10 @@ static void initialise_mdns(void)
     mdns_instance_name_set(ESP_HOSTNAME);
 }
 
-//-----------------------------------------------------------------------------
+// The wifi task intializes the wifi interface and attempts to connect in station
+// mode if wifi info is saved. If no info is saved or the connection fails, it
+// defaults back to AP mode. If new wifi data is entered, it will attempt to 
+// connect in station mode again
 static void wifi_task( void *Param )
 {
     ESP_LOGI(TAG,  "Wifi task starting\n" );
@@ -485,6 +615,7 @@ static void wifi_task( void *Param )
         }
         if (new_wifi_info == 1) {
             wifi_connected = 0;
+            wifi_retry_count = 0;
             ESP_LOGI(TAG, "New Wifi info detected. Switching to STA mode");
             if (server){
                 ESP_LOGI(TAG,  "Stopping webserver" );
@@ -505,6 +636,7 @@ static void wifi_task( void *Param )
     
 }
 
+// OTA task was borrowed from another project
 //-----------------------------------------------------------------------------
 static void ota_task(void *Param)
 {
@@ -524,24 +656,29 @@ static void ota_task(void *Param)
     }
 }
 
-//-----------------------------------------------------------------------------
+
 void app_main( void )
 { 
-    esp_err_t error;
     ESP_LOGI(TAG,  "****************************\n" );
     ESP_LOGI(TAG,  "Application task starting\n" );
 
     // Initialize NVS.
-    error = nvs_flash_init();
+    esp_err_t error = nvs_flash_init();
     if ( ( error == ESP_ERR_NVS_NO_FREE_PAGES ) || ( error == ESP_ERR_NVS_NEW_VERSION_FOUND ) ) {
-        // Don't bother checking return codes, it's not like we can do anything about failures here anyways
-        nvs_flash_erase();
-        nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        error = nvs_flash_init();
     }
+    ESP_ERROR_CHECK( error );
 
+    // Initialize LED outputs
     lights_ledc_init();
+
+    // Initialize wifi info from NVS
+    if (strcmp(esp_wifi_sta_ssid, "") == 0) {
+        read_wifi_info_from_nvs();
+    }
   
-    // Put all the wifi stuff in a separate task so that we don't have to wait for a connection
+    // Start wifi and ota tasks
     xTaskCreate( wifi_task, "wifi_task", 4096, NULL, 0, NULL );
     xTaskCreate( ota_task, "ota_task", 8192, NULL, 5, NULL);
   
