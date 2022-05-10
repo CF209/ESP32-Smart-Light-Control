@@ -9,11 +9,9 @@ This project was created to test out some basic functions on the ESP32 including
 
 TO DO:
  - Update webpage so it works without access to internet
- - Understand OTA and HTTP authorization code since it was borrowed from another project
  - Update OTA page to fit into new website format
  - Investigate these errors that pop up when starting the webserver (it still seems to work fine though)
     httpd: httpd_server_init: error in listen (112)
- - Update webpage with actual LED state on first load or if something else changes the LED state
 */
 
 
@@ -64,6 +62,8 @@ static const char *TAG = "wifi idf test";
 
 // Tracks the number of retries for connecting to Wifi
 static int wifi_retry_count = 0;
+
+static int led_duty_cycle = 0;
 
 // Flags to track if wifi is connected and to trigger a reconnect if new data is entered
 static uint8_t wifi_connected = 0;
@@ -427,12 +427,21 @@ static esp_err_t index_post_handler( httpd_req_t *req )
         else {
             lights_set_brightness(light_value_int, 0);
             lights_set_brightness(light_value_int, 1);
+            led_duty_cycle = light_value_int;
         }
     }
     else {
         ESP_LOGI(TAG, "Put request not recognized");
     }
     httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t read_led_state( httpd_req_t *req )
+{
+    char duty_cycle_str[4];
+    sprintf(duty_cycle_str, "%d", led_duty_cycle);
+    httpd_resp_send(req, duty_cycle_str, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -483,6 +492,15 @@ static httpd_handle_t start_webserver( void )
       .user_ctx  = NULL
     };
     httpd_register_uri_handler( server, &index_post );
+
+    static httpd_uri_t readLEDstate =
+    {
+      .uri       = "/readLEDstate",
+      .method    = HTTP_GET,
+      .handler   = read_led_state,
+      .user_ctx  = NULL
+    };
+    httpd_register_uri_handler( server, &readLEDstate );
 
   }
     

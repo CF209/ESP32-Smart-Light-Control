@@ -483,6 +483,34 @@ function wifi_page() {
     document.getElementById("led_page").style.display = "none";
     document.getElementById("wifi_page").style.display = "block";
 };
+setInterval(function() {
+    // Call a function repetatively with 2 Second interval
+    getData();
+}, 1000); //2000mSeconds update rate
+function getData() {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+        if (this.readyState == 4 && this.status == 200) {
+            let led_val = this.responseText;
+            let prev_val = document.getElementById("light0_slider").value;
+            if (led_val != prev_val) {
+                document.getElementById("light0_slider").value = led_val;
+                if (led_val == "0" && prev_val > "0") {
+                    document.getElementById("light0_on").style.display = "none";
+                    document.getElementById("light0_off").style.display = "block";
+                    document.getElementById('light0_card').style.backgroundColor = "#ccc";
+                }
+                else if (led_val > "0" && prev_val == "0") {
+                    document.getElementById("light0_on").style.display = "block";
+                    document.getElementById("light0_off").style.display = "none";
+                    document.getElementById('light0_card').style.backgroundColor = "#FFFACD";
+                }
+            }
+        }
+    }
+    xhttp.open("GET", "readLEDstate", true);
+    xhttp.send();
+};
 </script>
 
 </body>
