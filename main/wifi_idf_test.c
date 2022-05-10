@@ -1,3 +1,21 @@
+/*
+WIFI IDF Test
+This project was created to test out some basic functions on the ESP32 including:
+  - Wifi station and AP mode and switching between the two
+  - OTA updates
+  - NVS storing data
+  - LED PWM outputs
+  - HTTP servers
+
+TO DO:
+ - Understand OTA and HTTP authorization code since it was borrowed from another project
+ - Update OTA page to fit into new website format
+ - Investigate these errors that pop up when starting the webserver (it still seems to work fine though)
+    httpd: httpd_server_init: error in listen (112)
+ - Update webpage with actual LED state on first load or if something else changes the LED state
+*/
+
+
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <esp_log.h>
@@ -49,6 +67,7 @@ static int wifi_retry_count = 0;
 // Flags to track if wifi is connected and to trigger a reconnect if new data is entered
 static uint8_t wifi_connected = 0;
 static uint8_t new_wifi_info = 0;
+static uint8_t ap_mode = 0;
 
 // Length of wifi data char arrays
 #define WIFI_SSID_LENGTH 33
@@ -344,17 +363,8 @@ static esp_err_t index_post_handler( httpd_req_t *req )
     ESP_LOGI(TAG, "Content: %s\n", content);
 
     // Respond to the request depending on the content
-    // H or L indicates a change to the LEDs
-    if (content[0] == 'H') {
-        lights_set_brightness(255, 0);
-        lights_set_brightness(255, 1);
-    }
-    else if (content[0] == 'L') {
-        lights_set_brightness(0, 0);
-        lights_set_brightness(0, 1);
-    }
     // Decode the JSON format for the wifi info
-    else if (strncmp(content, "{\"ssid\": \"", 10) == 0) {
+    if (strncmp(content, "{\"ssid\": \"", 10) == 0) {
         char* ptr = content + 10;
         uint8_t i = 0;
         char new_ssid[WIFI_SSID_LENGTH];
@@ -393,6 +403,29 @@ static esp_err_t index_post_handler( httpd_req_t *req )
         }
         else {
             ESP_LOGI(TAG, "Found SSID but no password");
+        }
+    }
+    // Decode the JSON format for LED brightness
+    else if (strncmp(content, "{\"light0\": \"", 10) == 0) {
+        char* ptr = content + 12;
+        uint8_t i = 0;
+        char light_value[4];
+        while (*ptr != '"' && i < 3) {
+            light_value[i] = *ptr;
+            i++;
+            ptr++;
+        }
+        light_value[i] = '\0';
+        int light_value_int = atoi(light_value);
+        if (*ptr != '"') {
+            ESP_LOGI(TAG, "Light value is too long. Max 3 characters");
+        }
+        else if (light_value_int > 255 || light_value_int < 0) {
+            ESP_LOGI(TAG, "Invalid light value: %d", light_value_int);
+        }
+        else {
+            lights_set_brightness(light_value_int, 0);
+            lights_set_brightness(light_value_int, 1);
         }
     }
     else {
@@ -600,9 +633,11 @@ static void wifi_task( void *Param )
     }
     
     const uint32_t task_delay_ms = 1000;
+    int second_counter = 0;
     while(1) {
         if (wifi_connected == 0) {
             ESP_LOGI(TAG, "Wifi Disconnected! Switching to AP mode");
+            ap_mode = 1;
             ESP_ERROR_CHECK(esp_wifi_stop() );
             ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP) );
             ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config) );
@@ -612,8 +647,10 @@ static void wifi_task( void *Param )
                 server = start_webserver();
             }
             wifi_connected = 1;
+            second_counter = 0;
         }
         if (new_wifi_info == 1) {
+            ap_mode = 0;
             wifi_connected = 0;
             wifi_retry_count = 0;
             ESP_LOGI(TAG, "New Wifi info detected. Switching to STA mode");
@@ -631,7 +668,38 @@ static void wifi_task( void *Param )
             new_wifi_info = 0;
             vTaskDelay(ESP_WIFI_CONNECT_WAIT / portTICK_RATE_MS);
         }
+        if (second_counter >= 60) {
+            second_counter = 0;
+            ESP_LOGI(TAG, "60 second timer");
+            if (strcmp(esp_wifi_sta_ssid, "") != 0 && ap_mode == 1) {
+                ESP_LOGI(TAG, "Checking if any stations connected");
+                wifi_sta_list_t station_list;
+                if (esp_wifi_ap_get_sta_list(&station_list) == ESP_OK) {
+                    ESP_LOGI(TAG, "%d stations connected", station_list.num);
+                    if (station_list.num == 0) {
+                        ESP_LOGI(TAG, "No stations connected to AP. Checking for wifi");
+                        ap_mode = 0;
+                        wifi_connected = 0;
+                        wifi_retry_count = 0;
+                        if (server){
+                            ESP_LOGI(TAG,  "Stopping webserver" );
+                            httpd_stop(server);
+                            server = NULL;
+                        }
+                        memcpy(wifi_sta_config.sta.ssid, esp_wifi_sta_ssid, 32);
+                        memcpy(wifi_sta_config.sta.password, esp_wifi_sta_pass, 64);
+                        ESP_ERROR_CHECK(esp_wifi_stop() );
+                        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+                        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config) );
+                        ESP_ERROR_CHECK(esp_wifi_start() );
+                        new_wifi_info = 0;
+                        vTaskDelay(ESP_WIFI_CONNECT_WAIT / portTICK_RATE_MS);
+                    }
+                }
+            }
+        }
         vTaskDelay(task_delay_ms / portTICK_RATE_MS);
+        second_counter++;
     }
     
 }
