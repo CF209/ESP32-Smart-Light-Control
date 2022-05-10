@@ -8,6 +8,7 @@ This project was created to test out some basic functions on the ESP32 including
   - HTTP servers
 
 TO DO:
+ - Update webpage so it works without access to internet
  - Understand OTA and HTTP authorization code since it was borrowed from another project
  - Update OTA page to fit into new website format
  - Investigate these errors that pop up when starting the webserver (it still seems to work fine though)
