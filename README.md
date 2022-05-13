@@ -1,3 +1,5 @@
+![alt text](/home_page.png)
+
 This project was created as a base for creating custum ESP32 sensors and controllers using the ESP IDF instead of the Arduino IDE.
 
 On startup, the ESP32 attempts to connect to wifi if there is a saved wifi network. If not, it starts in soft AP mode.
@@ -12,3 +14,4 @@ It then hosts a web server that allows for multiple different functions through 
  - Over the air updates
 
 I eventually want to also use the web interface for live monitoring of sensors, and to connect the ESP32 to an MQTT server to send/receive data from home assistant.
+
