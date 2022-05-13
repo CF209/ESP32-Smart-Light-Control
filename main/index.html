@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Test website for the ESP32">
-    <title>ESP32 Wifi Test</title>
+    <title>ESP32 Light Control</title>
     <link rel="stylesheet" href="https://unpkg.com/purecss@2.1.0/build/pure-min.css" integrity="sha384-yHIFVG6ClnONEA5yB5DJXfW2/KC173DIQrYoZMEtBvGzmf0PKiGyNEqe9N6BNDBH" crossorigin="anonymous">
     <script src="https://code.iconify.design/2/2.2.1/iconify.min.js"></script>
     <style>
@@ -12,16 +12,11 @@
             color: #777;
         }
 
-        .pure-img-responsive {
-            max-width: 100%;
-            height: auto;
-        }
-
         .light-card {
             box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
             transition: 0.3s;
             width: 80%;
-            height: 90px;
+            height: 100px;
             border-radius: 5px;
             display: flex;
             align-items: center;
@@ -44,6 +39,64 @@
             display: flex;
             justify-content: left;
             width: 80%;
+            position: relative;
+        }
+
+        .light-card:hover .range-value {
+            visibility: visible;
+            opacity: 1;
+            transition: opacity 0.25s linear;
+        }
+
+        input[type=range] {
+            margin: 13px 0;
+            width: 100%;
+        }
+
+        .range-value{
+            visibility: hidden;
+            opacity: 0;
+            transition: visibility 0s 0.25s, opacity 0.25s linear;
+            position: absolute;
+            top: -50%;
+        }
+        .range-value span{
+            width: 32px;
+            height: 24px;
+            line-height: 24px;
+            text-align: center;
+            background: #1f8dd6;
+            color: #fff;
+            font-size: 12px;
+            display: block;
+            position: absolute;
+            left: 50%;
+            transform: translate(-50%, 0);
+            border-radius: 6px;
+        }
+        .range-value span:before{
+            content: "";
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-top: 10px solid #1f8dd6;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            margin-top: -1px;
+        }
+
+        .green-warning {
+            color: green;
+            font-weight: bold;
+            font-size: large;
+        }
+        .red-warning {
+            color: red;
+            font-weight: bold;
+            font-size: large;
         }
 
         /*
@@ -306,8 +359,10 @@
             <a class="pure-menu-heading">Vanomation</a>
 
             <ul class="pure-menu-list">
-                <li class="pure-menu-item menu-item-divided pure-menu-selected" id="led_link"><a href="#led" class="pure-menu-link" onclick="led_page()">LED Control</a></li>
-                <li class="pure-menu-item" id = "wifi_link"><a href="#wifi" class="pure-menu-link" onclick="wifi_page()">Update Wifi</a></li>
+                <li class="pure-menu-item menu-item-divided pure-menu-selected" id="home_link"><a href="#home" class="pure-menu-link">Home</a></li>
+                <li class="pure-menu-item" id = "wifi_link"><a href="#wifi" class="pure-menu-link">Wifi Setup</a></li>
+                <li class="pure-menu-item" id = "lights_link"><a href="#lights" class="pure-menu-link">Lights Setup</a></li>
+                <li class="pure-menu-item" id = "mqtt_link"><a href="#mqtt" class="pure-menu-link">MQTT Setup</a></li>
                 <li class="pure-menu-item" id = "ota_link"><a href="/ota" class="pure-menu-link">Update FW</a></li>
             </ul>
         </div>
@@ -315,44 +370,157 @@
 
     <div id="main">
         <div class="header">
-            <h1>ESP32 Wifi Test</h1>
+            <h1>Smart Light Control</h1>
+            <h2 id="page_name">HOME</h3>
         </div>
 
         <div class="content">
-            <div id="led_page" style="display: block">
-                <h2 class="content-subhead">Control the LED</h2>
-                <div class="light-card flex" id="light0_card">
-                    <div class="light-icon" id="light0_icon" onclick="light0_toggle()">
-                        <span class="iconify" data-icon="iconoir:light-bulb" id="light0_off" style="display: block; font-size: 50px"></span>
-                        <span class="iconify" data-icon="iconoir:light-bulb-on" id="light0_on" style="display: none; font-size: 50px"></span>
+            <div id="home_page" class="page pure-g" style="display: block">
+                <div id="light0_div" style="display: none">
+                    <div class="pure-u-1-4" style="text-align: right;"><h2 class="content-subhead" id="light0_label">Light 0</h2></div>
+                    <div class="pure-u-3-4">
+                        <div class="light-card flex" id="light0_card">
+                            <div class="light-icon" id="light0_icon">
+                                <span class="iconify" data-icon="iconoir:light-bulb" id="light0_off" style="display: block; font-size: 50px"></span>
+                                <span class="iconify" data-icon="iconoir:light-bulb-on" id="light0_on" style="display: none; font-size: 50px"></span>
+                            </div>
+                            <div class="light-slider">
+                                <div class="range-value" id="light0_value"></div>
+                                <input type="range" class="range" min="0" max="255" value="0" style="width: 90%" id="light0_slider" onchange="lightSlider('light0')">
+                            </div>
+                        </div>
                     </div>
-                    <div class="light-slider">
-                        <input type="range" min="0" max="255" value="0" style="width: 90%" id="light0_slider" onchange="light0_slider()">
+                </div>
+                <div id="light1_div" style="display: none">
+                    <div class="pure-u-1-4" style="text-align: right;"><h2 class="content-subhead" id="light1_label">Light 1</h2></div>
+                    <div class="pure-u-3-4">
+                        <div class="light-card flex" id="light1_card">
+                            <div class="light-icon" id="light1_icon">
+                                <span class="iconify" data-icon="iconoir:light-bulb" id="light1_off" style="display: block; font-size: 50px"></span>
+                                <span class="iconify" data-icon="iconoir:light-bulb-on" id="light1_on" style="display: none; font-size: 50px"></span>
+                            </div>
+                            <div class="light-slider">
+                                <div class="range-value" id="light1_value"></div>
+                                <input type="range" class="range" min="0" max="255" value="0" style="width: 90%" id="light1_slider" onchange="lightSlider('light1')">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="light2_div" style="display: none">
+                    <div class="pure-u-1-4" style="text-align: right;"><h2 class="content-subhead" id="light2_label">Light 2</h2></div>
+                    <div class="pure-u-3-4">
+                        <div class="light-card flex" id="light2_card">
+                            <div class="light-icon" id="light2_icon">
+                                <span class="iconify" data-icon="iconoir:light-bulb" id="light2_off" style="display: block; font-size: 50px"></span>
+                                <span class="iconify" data-icon="iconoir:light-bulb-on" id="light2_on" style="display: none; font-size: 50px"></span>
+                            </div>
+                            <div class="light-slider">
+                                <div class="range-value" id="light2_value"></div>
+                                <input type="range" class="range" min="0" max="255" value="0" style="width: 90%" id="light2_slider" onchange="lightSlider('light2')">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="light3_div" style="display: none">
+                    <div class="pure-u-1-4" style="text-align: right;"><h2 class="content-subhead" id="light3_label">Light 3</h2></div>
+                    <div class="pure-u-3-4">
+                        <div class="light-card flex" id="light3_card">
+                            <div class="light-icon" id="light3_icon">
+                                <span class="iconify" data-icon="iconoir:light-bulb" id="light3_off" style="display: block; font-size: 50px"></span>
+                                <span class="iconify" data-icon="iconoir:light-bulb-on" id="light3_on" style="display: none; font-size: 50px"></span>
+                            </div>
+                            <div class="light-slider">
+                                <div class="range-value" id="light3_value"></div>
+                                <input type="range" class="range" min="0" max="255" value="0" style="width: 90%" id="light3_slider" onchange="lightSlider('light3')">
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div id="wifi_page" style="display: none">
+            <div id="wifi_page" class="page" style="display: none">
                 <h2 class="content-subhead">Change the wifi network</h2>
-                <form class="pure-form pure-form-stacked" onsubmit="new_wifi()">
+                <form class="pure-form pure-form-stacked" onsubmit="newWifi();return false">
                     <fieldset>
                         <label for="ssid">Network Name</label>
-                        <input type="text" id="ssid" placeholder="SSID" style="margin: 0.25em auto;"/>
+                        <input type="text" id="ssid" placeholder="SSID" required="" style="margin: 0.25em auto;" maxlength="32" minlength="1"/>
                         <label for="password">Password</label>
-                        <input type="password" id="password" placeholder="Password" style="margin: 0.25em auto;"/>
+                        <input type="password" id="password" placeholder="Password" required="" style="margin: 0.25em auto;" maxlength="63" minlength="8"/>
                         <button type="submit" class="pure-button pure-button-primary">Connect</button>
                     </fieldset>
                 </form>
+                <div class="green-warning" id="wifi_update_status"></div>
             </div>
+
+            <div id="lights_page" class="page" style="display: none">
+                <h2 class="content-subhead">Setup the lights</h2>
+                <form class="pure-form pure-g" onsubmit="newLightData();return false">
+                    <label class="pure-u-1">Light 0 Name</label>
+                    <div class="pure-u-1-5">
+                        <label for="light0_enabled" class="pure-checkbox">
+                            <input type="checkbox" id="light0_enabled" checked/> Enabled
+                        </label>
+                    </div>
+                    <div class="pure-u-3-5">
+                        <input type="text" class="pure-input-1" id="light0_name" placeholder="Light 0" maxlength="12"/>
+                    </div>
+                    <div class="pure-u-1-5"></div>
+                    <label class="pure-u-1">Light 1 Name</label>
+                    <div class="pure-u-1-5">
+                        <label for="light1_enabled" class="pure-checkbox">
+                            <input type="checkbox" id="light1_enabled" checked/> Enabled
+                        </label>
+                    </div>
+                    <div class="pure-u-3-5">
+                        <input type="text" class="pure-input-1" id="light1_name" placeholder="Light 1" maxlength="12"/>
+                    </div>
+                    <div class="pure-u-1-5"></div>
+                    <label class="pure-u-1">Light 2 Name</label>
+                    <div class="pure-u-1-5">
+                        <label for="light2_enabled" class="pure-checkbox">
+                            <input type="checkbox" id="light2_enabled" checked/> Enabled
+                        </label>
+                    </div>
+                    <div class="pure-u-3-5">
+                        <input type="text" class="pure-input-1" id="light2_name" placeholder="Light 2" maxlength="12"/>
+                    </div>
+                    <div class="pure-u-1-5"></div>
+                    <label class="pure-u-1">Light 3 Name</label>
+                    <div class="pure-u-1-5">
+                        <label for="light3_enabled" class="pure-checkbox">
+                            <input type="checkbox" id="light3_enabled" checked/> Enabled
+                        </label>
+                    </div>
+                    <div class="pure-u-3-5">
+                        <input type="text" class="pure-input-1" id="light3_name" placeholder="Light 3" maxlength="12"/>
+                    </div>
+                    <div class="pure-u-1-5"></div>
+                    <div class="pure-u-1">
+                        <button type="submit" class="pure-button pure-button-primary">Save</button>
+                    </div>
+                </form>
+                <div id="light_setup_status" class="green-warning"></div>
+            </div>
+
+            <div id="mqtt_page" class="page" style="display: none">
+                <h2 class="content-subhead">MQTT Setup</h2>
+                <form class="pure-form pure-form-stacked" onsubmit="mqttConnect();return false">
+                    <fieldset>
+                        <label for="ssid">MQTT Broker URI<br>For example: mqtt://192.168.1.101:1883</label>
+                        <input type="text" id="mqtt_broker" placeholder="MQTT Broker" required="" style="margin: 0.25em auto;" maxlength="256"/>
+                        <button type="submit" class="pure-button pure-button-primary">Connect</button>
+                    </fieldset>
+                </form>
+                <div id="mqtt_status" class="green-warning"></div>
+            </div>
+
         </div>
     </div>
 </div>
 
 <script>
-    (function (window, document) {
 
-// we fetch the elements each time because docusaurus removes the previous
-// element references on page navigation
+// Function from Pure CSS example
 function getElements() {
     return {
         layout: document.getElementById('layout'),
@@ -361,37 +529,35 @@ function getElements() {
     };
 }
 
+// Function from Pure CSS example
 function toggleClass(element, className) {
     var classes = element.className.split(/\s+/);
     var length = classes.length;
     var i = 0;
-
     for (; i < length; i++) {
         if (classes[i] === className) {
             classes.splice(i, 1);
             break;
         }
     }
-    // The className is not found
     if (length === classes.length) {
         classes.push(className);
     }
-
     element.className = classes.join(' ');
 }
 
+// Function from Pure CSS example
 function toggleAll() {
     var active = 'active';
     var elements = getElements();
-
     toggleClass(elements.layout, active);
     toggleClass(elements.menu, active);
     toggleClass(elements.menuLink, active);
 }
 
+// Function from Pure CSS example
 function handleEvent(e) {
     var elements = getElements();
-    
     if (e.target.id === elements.menuLink.id) {
         toggleAll();
         e.preventDefault();
@@ -399,118 +565,254 @@ function handleEvent(e) {
         toggleAll();
     }
 }
-
 document.addEventListener('click', handleEvent);
 
-}(this, this.document));
-function led_on() {
-  xhr = new XMLHttpRequest();
-  xhr.open('POST', '/', true);
-  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-  xhr.send('H');
+//Change page after a menu item is clicked
+function changePage(name) {
+    const menuItems = document.querySelectorAll("li.pure-menu-item");
+    menuItems.forEach(function(currentValue) {
+        currentValue.classList.remove("menu-item-divided");
+        currentValue.classList.remove("pure-menu-selected")
+    });
+    const pages = document.querySelectorAll("div.page");
+    pages.forEach(function(currentValue) {
+        currentValue.style.display = "none";
+    });
+    var menu_link = document.getElementById(name + "_link");
+    menu_link.classList.add("menu-item-divided");
+    menu_link.classList.add("pure-menu-selected");
+    document.getElementById(name + "_page").style.display = "block";
+    document.getElementById("page_name").textContent = name.toUpperCase();
 };
-function led_off() {
-  xhr = new XMLHttpRequest();
-  xhr.open('POST', '/', true);
-  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-  xhr.send('L');
-};
-function new_wifi() {
-  let new_ssid = document.getElementById("ssid").value;
-  let new_password = document.getElementById("password").value;
-  var data = `{"ssid": "${new_ssid}", "psk": "${new_password}"}`;
-  xhr = new XMLHttpRequest();
-  xhr.open('POST', '/', true);
-  xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-  xhr.send(data);
-};
-function light0_toggle() {
-    var light_value = document.getElementById("light0_slider").value;
-    if (light_value > 0) {
-        light_value = 0;
-        document.getElementById("light0_on").style.display = "none";
-        document.getElementById("light0_off").style.display = "block";
-        document.getElementById('light0_card').style.backgroundColor = "#ccc";
+
+// Toggle the light on or off when it is clicked
+function toggleLight(lightName) {
+    clearInterval(status_update_interval);
+    let slider = document.getElementById(lightName + "_slider");
+    var newVal;
+    if (slider.value > 0) {
+        newVal = 0;
     }
     else {
-        light_value = 255;
-        document.getElementById("light0_on").style.display = "block";
-        document.getElementById("light0_off").style.display = "none";
-        document.getElementById('light0_card').style.backgroundColor = "#FFFACD";
+        newVal = 255;
     }
-    document.getElementById("light0_slider").value = light_value;
-    var data = `{"light0": "${light_value}"}`;
+    setLight(lightName, newVal);
+    slider.value = newVal;
+    setBubble(slider, document.getElementById(lightName + "_value"));
+    sendLightData(lightName, newVal);
+    status_update_interval = setInterval(statusUpdate, 1000);
+}
+
+//Function for when light range slider is changed
+function lightSlider(light) {
+    clearInterval(status_update_interval);
+    var lightValue = document.getElementById(light + "_slider").value;
+    if (lightValue > 0) {
+        document.getElementById(light + "_on").style.display = "block";
+        document.getElementById(light + "_off").style.display = "none";
+        document.getElementById(light + "_card").style.backgroundColor = "#FFFACD";
+    }
+    else {
+        document.getElementById(light + "_on").style.display = "none";
+        document.getElementById(light + "_off").style.display = "block";
+        document.getElementById(light + "_card").style.backgroundColor = "#ccc";
+    }
+    sendLightData(light, lightValue);
+    status_update_interval = setInterval(statusUpdate, 1000);
+};
+
+// Set light to a new value and change display accordingly
+function setLight(light, newVal) {
+    let prev_val = document.getElementById(light + "_slider").value;
+    if (newVal != prev_val) {
+        document.getElementById(light + "_slider").value = newVal;
+        if (newVal == "0" && prev_val > "0") {
+            document.getElementById(light + "_on").style.display = "none";
+            document.getElementById(light + "_off").style.display = "block";
+            document.getElementById(light + "_card").style.backgroundColor = "#ccc";
+        }
+        else if (newVal > "0" && prev_val == "0") {
+            document.getElementById(light + "_on").style.display = "block";
+            document.getElementById(light + "_off").style.display = "none";
+            document.getElementById(light + "_card").style.backgroundColor = "#FFFACD";
+        }
+    }
+}
+
+//Send light data back to the server
+function sendLightData(light, val) {
+    var data = `{"light": "${light.slice(-1)}", "val": "${val}"}`;
     xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4 && xhr.status == 200) {
+        }
+    };
     xhr.open('POST', '/', true);
     xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
     xhr.send(data);
-};
-function light0_slider() {
-    var light_value = document.getElementById("light0_slider").value;
-    if (light_value > 0) {
-        document.getElementById("light0_on").style.display = "block";
-        document.getElementById("light0_off").style.display = "none";
-        document.getElementById('light0_card').style.backgroundColor = "#FFFACD";
-    }
-    else {
-        document.getElementById("light0_on").style.display = "none";
-        document.getElementById("light0_off").style.display = "block";
-        document.getElementById('light0_card').style.backgroundColor = "#ccc";
-    }
-    var data = `{"light0": "${light_value}"}`;
+}
+
+// Function for when new wifi data is entered
+function newWifi() {
+    let status = document.getElementById("wifi_update_status");
+    status.textContent = "Saving Wifi info";
+    let new_ssid = document.getElementById("ssid").value;
+    let new_password = document.getElementById("password").value;
+    var data = `{"ssid": "${new_ssid}", "psk": "${new_password}"}`;
     xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4 && xhr.status == 200) {
+            status.textContent = xhr.responseText;
+        }
+        else if (xhr.readyState == 4) {
+            status.textContent = "Error. Please retry"
+        }
+    };
     xhr.open('POST', '/', true);
     xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
     xhr.send(data);
+    document.getElementById("bad_wifi_info").style.display = "none";
+    document.getElementById("new_wifi").style.display = "block";
 };
-function led_page() {
-    var led_link = document.getElementById("led_link");
-    led_link.classList.add("menu-item-divided");
-    led_link.classList.add("pure-menu-selected");
-    var wifi_link = document.getElementById("wifi_link");
-    wifi_link.classList.remove("menu-item-divided");
-    wifi_link.classList.remove("pure-menu-selected");
-    document.getElementById("led_page").style.display = "block";
-    document.getElementById("wifi_page").style.display = "none";
+
+function newLightData() {
+    let status = document.getElementById("light_setup_status");
+    status.textContent = "Saving data...";
+
+    let light0_name = document.getElementById("light0_name").value;
+    let light1_name = document.getElementById("light1_name").value;
+    let light2_name = document.getElementById("light2_name").value;
+    let light3_name = document.getElementById("light3_name").value;
+
+    let light0_en = document.getElementById("light0_enabled").checked;
+    let light1_en = document.getElementById("light1_enabled").checked;
+    let light2_en = document.getElementById("light2_enabled").checked;
+    let light3_en = document.getElementById("light3_enabled").checked;
+
+    var data = `{"light0_name": "${light0_name}", "light0_en": "${light0_en}", "light1_name": "${light1_name}", "light1_en": "${light1_en}", "light2_name": "${light2_name}", "light2_en": "${light2_en}", "light3_name": "${light3_name}", "light3_en": "${light3_en}"}`;
+    xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4 && xhr.status == 200) {
+            status.textContent = xhr.responseText;
+        }
+        else if (xhr.readyState == 4) {
+            status.textContent = "Error. Please retry"
+        }
+    };
+    xhr.open('POST', '/', true);
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    xhr.send(data);
+}
+
+function mqttConnect() {
+    let status = document.getElementById("mqtt_status");
+    status.textContent = "Connecting to broker...";
+    let mqttBroker = document.getElementById("mqtt_broker").value;
+    var data = `{"mqtt_broker": "${mqttBroker}"}`;
+    xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4 && xhr.status == 200) {
+            status.textContent = xhr.responseText;
+        }
+        else if (xhr.readyState == 4) {
+            status.textContent = "Error. Please retry"
+        }
+    };
+    xhr.open('POST', '/', true);
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    xhr.send(data);
+}
+
+// Creates a moving bubble that shows the % on the range slider
+const allRanges = document.querySelectorAll(".light-slider");
+allRanges.forEach(wrap => {
+  const range = wrap.querySelector(".range");
+  const bubble = wrap.querySelector(".range-value");
+
+  range.addEventListener("input", () => {
+    setBubble(range, bubble);
+  });
+  setBubble(range, bubble);
+});
+
+function setBubble(range, bubble) {
+    let newPercent = range.value * 100 / 255;
+    let newPosition = ((range.clientWidth - 16) * newPercent / 100) + 8;
+    newPercent = Math.ceil(newPercent);
+    bubble.innerHTML = `<span>${newPercent}%</span>`;
+    bubble.style.left = `${newPosition}px`;
 };
-function wifi_page() {
-    var led_link = document.getElementById("led_link");
-    led_link.classList.remove("menu-item-divided");
-    led_link.classList.remove("pure-menu-selected");
-    var wifi_link = document.getElementById("wifi_link");
-    wifi_link.classList.add("menu-item-divided");
-    wifi_link.classList.add("pure-menu-selected");
-    document.getElementById("led_page").style.display = "none";
-    document.getElementById("wifi_page").style.display = "block";
-};
-setInterval(function() {
-    // Call a function repetatively with 2 Second interval
-    getData();
-}, 1000); //2000mSeconds update rate
-function getData() {
+
+function setLightProperties(light, name, enabled) {
+    if (enabled == "1") {
+        document.getElementById(light + "_div").style.display = "block";
+        if (document.getElementById("lights_page").style.display == "none") {
+            document.getElementById(light + "_enabled").checked = true;
+        }
+    }
+    else {
+        document.getElementById(light + "_div").style.display = "none";
+        if (document.getElementById("lights_page").style.display == "none") {
+            document.getElementById(light + "_enabled").checked = false;
+        }
+    }
+    if (name.length > 0) {
+        document.getElementById(light + "_label").textContent = name;
+        document.getElementById(light + "_name").placeholder = name;
+    }
+}
+
+function statusUpdate() {
     var xhttp = new XMLHttpRequest();
     xhttp.onreadystatechange = function() {
         if (this.readyState == 4 && this.status == 200) {
-            let led_val = this.responseText;
-            let prev_val = document.getElementById("light0_slider").value;
-            if (led_val != prev_val) {
-                document.getElementById("light0_slider").value = led_val;
-                if (led_val == "0" && prev_val > "0") {
-                    document.getElementById("light0_on").style.display = "none";
-                    document.getElementById("light0_off").style.display = "block";
-                    document.getElementById('light0_card').style.backgroundColor = "#ccc";
-                }
-                else if (led_val > "0" && prev_val == "0") {
-                    document.getElementById("light0_on").style.display = "block";
-                    document.getElementById("light0_off").style.display = "none";
-                    document.getElementById('light0_card').style.backgroundColor = "#FFFACD";
-                }
-            }
+            const json_obj = JSON.parse(this.responseText);
+            setLight("light0", json_obj["lights"]["light0"]["duty_cycle"]);
+            setLight("light1", json_obj["lights"]["light1"]["duty_cycle"]);
+            setLight("light2", json_obj["lights"]["light2"]["duty_cycle"]);
+            setLight("light3", json_obj["lights"]["light3"]["duty_cycle"]);
+            setLightProperties("light0", json_obj["lights"]["light0"]["name"], json_obj["lights"]["light0"]["enabled"]);
+            setLightProperties("light1", json_obj["lights"]["light1"]["name"], json_obj["lights"]["light1"]["enabled"]);
+            setLightProperties("light2", json_obj["lights"]["light2"]["name"], json_obj["lights"]["light2"]["enabled"]);
+            setLightProperties("light3", json_obj["lights"]["light3"]["name"], json_obj["lights"]["light3"]["enabled"]);
         }
     }
-    xhttp.open("GET", "readLEDstate", true);
+    xhttp.open("GET", "status_update", true);
     xhttp.send();
-};
+}
+
+//Menu link event listeners
+document.getElementById("home_link").addEventListener('click', (e) => {
+    changePage("home");
+});
+document.getElementById("wifi_link").addEventListener('click', (e) => {
+    changePage("wifi");
+});
+document.getElementById("lights_link").addEventListener('click', (e) => {
+    changePage("lights");
+});
+document.getElementById("mqtt_link").addEventListener('click', (e) => {
+    changePage("mqtt");
+});
+
+//Light button even listeners
+document.getElementById("light0_icon").addEventListener('click', (e) => {
+    toggleLight("light0");
+});
+document.getElementById("light1_icon").addEventListener('click', (e) => {
+    toggleLight("light1");
+});
+document.getElementById("light2_icon").addEventListener('click', (e) => {
+    toggleLight("light2");
+});
+document.getElementById("light3_icon").addEventListener('click', (e) => {
+    toggleLight("light3");
+});
+
+// Read light data from server on page load and every second
+document.addEventListener("DOMContentLoaded", statusUpdate);
+var status_update_interval = setInterval(statusUpdate, 1000); //1000mSeconds update rate
+
 </script>
 
 </body>

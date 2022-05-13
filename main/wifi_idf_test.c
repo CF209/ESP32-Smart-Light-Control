@@ -21,19 +21,21 @@ TO DO:
 #include <esp_system.h>
 #include <nvs_flash.h>
 #include <sys/param.h>
-#include "nvs_flash.h"
-#include "esp_netif.h"
-#include "esp_eth.h"
-#include "esp_ota_ops.h"
-#include "esp_flash_partitions.h"
-#include "esp_partition.h"
-#include "esp_tls_crypto.h"
+#include <nvs_flash.h>
+#include <esp_netif.h>
+#include <esp_eth.h>
+#include <esp_ota_ops.h>
+#include <esp_flash_partitions.h>
+#include <esp_partition.h>
+#include <esp_tls_crypto.h>
 #include <esp_http_server.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/event_groups.h"
-#include "esp_err.h"
-#include "mdns.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/event_groups.h>
+#include <esp_err.h>
+#include <mdns.h>
+
+#include "jsmn.h"
 
 // Moved the lights functions to a separate file to clean up code
 #include "lights_ledc.h"
@@ -43,8 +45,8 @@ TO DO:
 #define ESP_MAXIMUM_CONNECT_RETRY  10
 #define ESP_WIFI_CONNECT_WAIT      15000
 
-// Wifi data for AP mode
-#define ESP_WIFI_AP_SSID           "esp_wifi_network"
+// Wifi data for AP mode. The program adds the ESP MAC address to the end of the SSID to avoid conflicts
+#define ESP_WIFI_AP_SSID           "esp_wifi"
 #define ESP_WIFI_AP_PASS           "password"
 #define ESP_WIFI_AP_CHANNEL        1
 #define ESP_WIFI_AP_MAX_STA_CONN   4
@@ -63,7 +65,15 @@ static const char *TAG = "wifi idf test";
 // Tracks the number of retries for connecting to Wifi
 static int wifi_retry_count = 0;
 
-static int led_duty_cycle = 0;
+// Saves the current state of the lights
+typedef struct
+{
+  char name[13];
+  uint8_t enabled;
+  int duty_cycle;
+} light_info_t;
+
+static light_info_t light_data[4];
 
 // Flags to track if wifi is connected and to trigger a reconnect if new data is entered
 static uint8_t wifi_connected = 0;
@@ -79,6 +89,8 @@ static uint8_t ap_mode = 0;
 // To initialize from NVS leave as ""
 static char esp_wifi_sta_ssid[WIFI_SSID_LENGTH] = "";
 static char esp_wifi_sta_pass[WIFI_PASS_LENGTH] = "";
+
+static char mqtt_broker_uri[257] = "";
 
 // Struct to store authorization details for OTA
 typedef struct
@@ -341,7 +353,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
 {
     ESP_LOGI(TAG, "Received index POST request\n");
 
-    char content[200];
+    char content[512];
 
     // Truncate if content length larger than the buffer
     size_t recv_size = MIN(req->content_len, sizeof(content));
@@ -363,85 +375,272 @@ static esp_err_t index_post_handler( httpd_req_t *req )
 
     ESP_LOGI(TAG, "Content: %s\n", content);
 
-    // Respond to the request depending on the content
-    // Decode the JSON format for the wifi info
-    if (strncmp(content, "{\"ssid\": \"", 10) == 0) {
-        char* ptr = content + 10;
-        uint8_t i = 0;
-        char new_ssid[WIFI_SSID_LENGTH];
-        while (*ptr != '"' && i < WIFI_SSID_LENGTH) {
-            new_ssid[i] = *ptr;
-            i++;
-            ptr++;
-        }
-        new_ssid[i] = '\0';
-        if (*ptr != '"') {
-            ESP_LOGI(TAG, "SSID is too long. Max 32 characters");
-        }
-        else if (strncmp(ptr, "\", \"psk\": \"", 11) == 0) {
-            i = 0;
-            ptr += 11;
-            char new_pass[WIFI_PASS_LENGTH];
-            while (*ptr != '"' && i < WIFI_PASS_LENGTH) {
-                new_pass[i] = *ptr;
-                i++;
-                ptr++;
-            }
-            new_pass[i] = '\0';
-            if (*ptr != '"') {
-                ESP_LOGI(TAG, "Password is too long. Max 63 characters");
-            }
-            else {
-                // If wifi info is ok, save it to the global variables,
-                // save it to NVS, and set the new_wifi_info flag to trigger a reconnect
-                ESP_LOGI(TAG, "New SSID: %s", new_ssid);
-                ESP_LOGI(TAG, "New PSK: %s", new_pass);
-                strcpy(esp_wifi_sta_ssid, new_ssid);
-                strcpy(esp_wifi_sta_pass, new_pass);
-                save_wifi_info_to_nvs();
-                new_wifi_info = 1;
-            }
-        }
-        else {
-            ESP_LOGI(TAG, "Found SSID but no password");
-        }
-    }
-    // Decode the JSON format for LED brightness
-    else if (strncmp(content, "{\"light0\": \"", 10) == 0) {
-        char* ptr = content + 12;
-        uint8_t i = 0;
-        char light_value[4];
-        while (*ptr != '"' && i < 3) {
-            light_value[i] = *ptr;
-            i++;
-            ptr++;
-        }
-        light_value[i] = '\0';
-        int light_value_int = atoi(light_value);
-        if (*ptr != '"') {
-            ESP_LOGI(TAG, "Light value is too long. Max 3 characters");
-        }
-        else if (light_value_int > 255 || light_value_int < 0) {
-            ESP_LOGI(TAG, "Invalid light value: %d", light_value_int);
-        }
-        else {
-            lights_set_brightness(light_value_int, 0);
-            lights_set_brightness(light_value_int, 1);
-            led_duty_cycle = light_value_int;
-        }
+    char resp[256] = "";
+
+    // Parse JSON data
+    jsmn_parser json_parser;
+    jsmntok_t json_content[32];
+    int num_tokens;
+
+    jsmn_init(&json_parser);
+    num_tokens = jsmn_parse(&json_parser, content, recv_size, json_content, 32);
+
+    int token_len = 0;
+    char* token_str = NULL;
+
+    if (num_tokens < 2) {
+        ESP_LOGI(TAG, "Error parsing JSON data");
     }
     else {
-        ESP_LOGI(TAG, "Put request not recognized");
+        token_len = json_content[1].end - json_content[1].start;
+        token_str = (char*)malloc((token_len + 1) * sizeof(char));
+        strncpy(token_str, content+json_content[1].start, token_len);
+        token_str[token_len] = '\0';
+
+        if (strcmp(token_str, "light") == 0) {
+            if (num_tokens != 5) {
+                ESP_LOGI(TAG, "Wrong number of tokens for light message!");
+            }
+            else {
+                token_len = json_content[2].end - json_content[2].start;
+                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                strncpy(token_str, content+json_content[2].start, token_len);
+                token_str[token_len] = '\0';
+
+                int light_num = atoi(token_str);
+
+                if (light_num > 3 || light_num < 0) {
+                    ESP_LOGI(TAG, "Light number %d out of range! Must be 0-3", light_num);
+                }
+                else {
+                    token_len = json_content[3].end - json_content[3].start;
+                    token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                    strncpy(token_str, content+json_content[3].start, token_len);
+                    token_str[token_len] = '\0';
+
+                    if (strcmp(token_str, "val") != 0) {
+                        ESP_LOGI(TAG, "Found light, but no value token");
+                    }
+                    else {
+                        token_len = json_content[4].end - json_content[4].start;
+                        token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                        strncpy(token_str, content+json_content[4].start, token_len);
+                        token_str[token_len] = '\0';
+
+                        int light_val = atoi(token_str);
+
+                        if (light_val < 0 || light_val > 255) {
+                            ESP_LOGI(TAG, "Light value %d out of range! Must be 0-255", light_val);
+                        }
+                        else {
+                            lights_set_brightness(light_val, light_num);
+                            light_data[light_num].duty_cycle = light_val;
+                            sprintf(resp, "Light updated");
+                        }
+                    }
+                }
+            }
+        }
+        else if (strcmp(token_str, "ssid") == 0) {
+            if (num_tokens != 5) {
+                ESP_LOGI(TAG, "Wrong number of tokens for Wifi message!");
+            }
+            else {
+                token_len = json_content[2].end - json_content[2].start;
+                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                strncpy(token_str, content+json_content[2].start, token_len);
+                token_str[token_len] = '\0';
+
+                if (token_len < 1 || token_len > 32) {
+                    ESP_LOGI(TAG, "SSID is too long. Max 32 characters");
+                }
+                else {
+                    char new_ssid[WIFI_SSID_LENGTH];
+                    strcpy(new_ssid, token_str);
+
+                    token_len = json_content[3].end - json_content[3].start;
+                    token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                    strncpy(token_str, content+json_content[3].start, token_len);
+                    token_str[token_len] = '\0';
+
+                    if (strcmp(token_str, "psk") != 0) {
+                        ESP_LOGI(TAG, "Found ssid, but no password token");
+                    }
+                    else {
+                        token_len = json_content[4].end - json_content[4].start;
+                        token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                        strncpy(token_str, content+json_content[4].start, token_len);
+                        token_str[token_len] = '\0';
+
+                        if (token_len < 8 || token_len > 63) {
+                            ESP_LOGI(TAG, "Password is wrong length. Min 8 characters. Max 63 characters");
+                        }
+                        else {
+                            // If wifi info is ok, save it to the global variables,
+                            // save it to NVS, and set the new_wifi_info flag to trigger a reconnect
+                            ESP_LOGI(TAG, "New SSID: %s", new_ssid);
+                            ESP_LOGI(TAG, "New PSK: %s", token_str);
+                            strcpy(esp_wifi_sta_ssid, new_ssid);
+                            strcpy(esp_wifi_sta_pass, token_str);
+                            save_wifi_info_to_nvs();
+                            new_wifi_info = 1;
+                            sprintf(resp, "New SSID and Password set! Connecting now");
+                        }
+                    }
+                }
+            }
+        }
+        else if (strcmp(token_str, "mqtt_broker") == 0) {
+            if (num_tokens != 3) {
+                ESP_LOGI(TAG, "Wrong number of tokens for MQTT message!");
+            }
+            else {
+                token_len = json_content[2].end - json_content[2].start;
+                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                strncpy(token_str, content+json_content[2].start, token_len);
+                token_str[token_len] = '\0';
+
+                if (token_len > 256) {
+                    ESP_LOGI(TAG, "MQTT Broker URI too long. Must be 256 characters or less");
+                }
+                else {
+                    strcpy(mqtt_broker_uri, token_str);
+                    ESP_LOGI(TAG, "MQTT Broker set!");
+                    sprintf(resp, "MQTT Broker Set!");
+                }
+            }
+        }
+        else if (strcmp(token_str, "light0_name") == 0) {
+            if (num_tokens != 17) {
+                ESP_LOGI(TAG, "Wrong number of tokens for light setup message!");
+            }
+            char cmp_str[12];
+            uint8_t index;
+            for (int i = 0; i < 4; i++){
+                index = (i * 4) + 1;
+                token_len = json_content[index].end - json_content[index].start;
+                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                strncpy(token_str, content+json_content[index].start, token_len);
+                token_str[token_len] = '\0';
+
+                sprintf(cmp_str, "light%d_name", i);
+                if (strcmp(cmp_str, token_str) != 0) {
+                    ESP_LOGI(TAG, "Token doesn't match: %s", token_str);
+                    sprintf(resp, "Error saving data");
+                    break;
+                }
+
+                index = (i * 4) + 2;
+                token_len = json_content[index].end - json_content[index].start;
+                if (token_len > 0) {
+                    token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                    strncpy(token_str, content+json_content[index].start, token_len);
+                    token_str[token_len] = '\0';
+
+                    if (token_len > 12) {
+                        ESP_LOGI(TAG, "Name too long. Max 12 chars: %s", token_str);
+                        sprintf(resp, "Error saving data");
+                        break;
+                    }
+                    strcpy(light_data[i].name, token_str);
+                }
+                else {
+                    strcpy(light_data[i].name, "");
+                }
+
+                index = (i * 4) + 3;
+                token_len = json_content[index].end - json_content[index].start;
+                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                strncpy(token_str, content+json_content[index].start, token_len);
+                token_str[token_len] = '\0';
+
+                sprintf(cmp_str, "light%d_en", i);
+                if (strcmp(cmp_str, token_str) != 0) {
+                    ESP_LOGI(TAG, "Token doesn't match: %s", token_str);
+                    sprintf(resp, "Error saving data");
+                    break;
+                }
+
+                index = (i * 4) + 4;
+                token_len = json_content[index].end - json_content[index].start;
+                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                strncpy(token_str, content+json_content[index].start, token_len);
+                token_str[token_len] = '\0';
+
+                if (strcmp(token_str, "true") == 0) {
+                    light_data[i].enabled = 1;
+                }
+                else if (strcmp(token_str, "false") == 0) {
+                    light_data[i].enabled = 0;
+                    light_data[i].duty_cycle = 0;
+                    lights_set_brightness(0, i);
+                    if (i == 3) {
+                        sprintf(resp, "Data saved!");
+                    }
+                }
+                else {
+                    ESP_LOGI(TAG, "Invalid enabled string. Should be \"true\" or \"false\": %s", token_str);
+                    sprintf(resp, "Error saving data");
+                    break;
+                }
+            }
+        }
+        else {
+            ESP_LOGI(TAG, "JSON token not recognized: %s", token_str);
+        }
     }
-    httpd_resp_send(req, NULL, 0);
+
+    free(token_str);
+    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
-static esp_err_t read_led_state( httpd_req_t *req )
+static esp_err_t status_update_handler( httpd_req_t *req )
 {
-    char duty_cycle_str[4];
-    sprintf(duty_cycle_str, "%d", led_duty_cycle);
-    httpd_resp_send(req, duty_cycle_str, HTTPD_RESP_USE_STRLEN);
+    char json_data[1024];
+    sprintf(json_data, 
+"{\"lights\":\
+{\
+\"light0\":\
+{\
+\"name\": \"%s\",\
+\"enabled\": \"%d\",\
+\"duty_cycle\": \"%d\"\
+},\
+\"light1\":\
+{\
+\"name\": \"%s\",\
+\"enabled\": \"%d\",\
+\"duty_cycle\": \"%d\"\
+},\
+\"light2\":\
+{\
+\"name\": \"%s\",\
+\"enabled\": \"%d\",\
+\"duty_cycle\": \"%d\"\
+},\
+\"light3\":\
+{\
+\"name\": \"%s\",\
+\"enabled\": \"%d\",\
+\"duty_cycle\": \"%d\"\
+}\
+}\
+}",
+        light_data[0].name,
+        light_data[0].enabled,
+        light_data[0].duty_cycle,
+        light_data[1].name,
+        light_data[1].enabled,
+        light_data[1].duty_cycle,
+        light_data[2].name,
+        light_data[2].enabled,
+        light_data[2].duty_cycle,
+        light_data[3].name,
+        light_data[3].enabled,
+        light_data[3].duty_cycle);
+    ESP_LOGI(TAG,  "Sending update. JSON length: %d", strlen(json_data));
+    httpd_resp_send(req, json_data, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -493,14 +692,14 @@ static httpd_handle_t start_webserver( void )
     };
     httpd_register_uri_handler( server, &index_post );
 
-    static httpd_uri_t readLEDstate =
+    static httpd_uri_t status_update =
     {
-      .uri       = "/readLEDstate",
+      .uri       = "/status_update",
       .method    = HTTP_GET,
-      .handler   = read_led_state,
+      .handler   = status_update_handler,
       .user_ctx  = NULL
     };
-    httpd_register_uri_handler( server, &readLEDstate );
+    httpd_register_uri_handler( server, &status_update );
 
   }
     
@@ -589,6 +788,14 @@ static void initialise_mdns(void)
 static void wifi_task( void *Param )
 {
     ESP_LOGI(TAG,  "Wifi task starting\n" );
+
+    // Variable to store mac address string which is unique to every ESP
+    char mac_addr_str[13];
+    //Read MAC address
+    uint8_t mac_addr[8];
+    ESP_ERROR_CHECK(esp_read_mac(mac_addr, ESP_MAC_WIFI_STA));
+    sprintf(mac_addr_str, "%02x%02x%02x%02x%02x%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    ESP_LOGI(TAG,  "ESP MAC address: %s", mac_addr_str);
   
     httpd_handle_t server = NULL;
   
@@ -622,6 +829,9 @@ static void wifi_task( void *Param )
     };
     memcpy(wifi_sta_config.sta.ssid, esp_wifi_sta_ssid, 32);
     memcpy(wifi_sta_config.sta.password, esp_wifi_sta_pass, 64);
+
+    
+
     wifi_config_t wifi_ap_config = {
         .ap = {
             .ssid = ESP_WIFI_AP_SSID,
@@ -635,6 +845,12 @@ static void wifi_task( void *Param )
     if (strlen(ESP_WIFI_AP_PASS) == 0) {
         wifi_ap_config.ap.authmode = WIFI_AUTH_OPEN;
     }
+
+    // Append MAC address to end of AP SSID name
+    char ap_ssid_name[33];
+    sprintf(ap_ssid_name, "%s_%x%x%x%x%x%x", ESP_WIFI_AP_SSID, mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    memcpy(wifi_ap_config.ap.ssid, ap_ssid_name, 32);
+    wifi_ap_config.ap.ssid_len = strlen(ap_ssid_name);
 
     if (strcmp(esp_wifi_sta_ssid, "") != 0) {
         ESP_LOGI(TAG, "Wifi info detected. Starting in STA mode");
@@ -714,6 +930,9 @@ static void wifi_task( void *Param )
                         new_wifi_info = 0;
                         vTaskDelay(ESP_WIFI_CONNECT_WAIT / portTICK_RATE_MS);
                     }
+                    else {
+                        ESP_LOGI(TAG, "STA0 MAC: %x:%x:%x:%x:%x:%x", station_list.sta[0].mac[0], station_list.sta[0].mac[1], station_list.sta[0].mac[2], station_list.sta[0].mac[3], station_list.sta[0].mac[4], station_list.sta[0].mac[5]);
+                    }
                 }
             }
         }
@@ -759,6 +978,19 @@ void app_main( void )
 
     // Initialize LED outputs
     lights_ledc_init();
+
+    sprintf(light_data[0].name, "Light 0");
+    light_data[0].enabled = 1;
+    light_data[0].duty_cycle = 0;
+    sprintf(light_data[1].name, "Light 1");
+    light_data[1].enabled = 1;
+    light_data[1].duty_cycle = 0;
+    sprintf(light_data[2].name, "Light 2");
+    light_data[2].enabled = 1;
+    light_data[2].duty_cycle = 0;
+    sprintf(light_data[3].name, "Light 3");
+    light_data[3].enabled = 1;
+    light_data[3].duty_cycle = 0;
 
     // Initialize wifi info from NVS
     if (strcmp(esp_wifi_sta_ssid, "") == 0) {
