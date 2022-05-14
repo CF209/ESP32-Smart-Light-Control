@@ -8,10 +8,7 @@ This project was created to test out some basic functions on the ESP32 including
   - HTTP servers
 
 TO DO:
- - Update webpage so it works without access to internet
  - Update OTA page to fit into new website format
- - Investigate these errors that pop up when starting the webserver (it still seems to work fine though)
-    httpd: httpd_server_init: error in listen (112)
 */
 
 
@@ -21,7 +18,6 @@ TO DO:
 #include <esp_system.h>
 #include <nvs_flash.h>
 #include <sys/param.h>
-#include <nvs_flash.h>
 #include <esp_netif.h>
 #include <esp_eth.h>
 #include <esp_ota_ops.h>
@@ -36,11 +32,20 @@ TO DO:
 #include <mdns.h>
 #include <mqtt_client.h>
 
-
+// Downloaded library for parsing JSON format
 #include "jsmn.h"
 
-// Moved the lights functions to a separate file to clean up code
+// Struct for saving light info
+typedef struct
+{
+  char name[13];
+  uint8_t enabled;
+  int duty_cycle;
+} light_info_t;
+
+// Moved some functions to separate files to clean up code
 #include "lights_ledc.h"
+#include "nvs_data.h"
 
 // Specify the max time and max number of retries for connecting
 // to wifi before switching to AP mode, whichever comes first
@@ -53,13 +58,11 @@ TO DO:
 #define ESP_WIFI_AP_CHANNEL        1
 #define ESP_WIFI_AP_MAX_STA_CONN   4
 
+// Variable to store the full SSID with MAC address
+static char ap_ssid_name[33];
+
 // Hostname for mDNS service. "my-esp32" becomes http://my-esp32.local/
 #define ESP_HOSTNAME    "my-esp32"
-
-// Keys for storing wifi data in NVS so it is preserved on reboot
-#define ESP_NVS_NAMESPACE "wifi_data"
-#define ESP_NVS_SSID_KEY  "wifi_ssid"
-#define ESP_NVS_PASS_KEY  "wifi_pass"
 
 // Debug tag for log statements
 static const char *TAG = "wifi idf test";
@@ -68,13 +71,6 @@ static const char *TAG = "wifi idf test";
 static int wifi_retry_count = 0;
 
 // Saves the current state of the lights
-typedef struct
-{
-  char name[13];
-  uint8_t enabled;
-  int duty_cycle;
-} light_info_t;
-
 static light_info_t light_data[4];
 
 // Flags to track if wifi is connected and to trigger a reconnect if new data is entered
@@ -89,10 +85,11 @@ static uint8_t new_mqtt_info = 0;
 #define WIFI_PASS_LENGTH 64
 
 // Char arrays for storing wifi data
-// If initialized here, NVS data will be ignored
-// To initialize from NVS leave as ""
+// If data is stored in NVS, it will overwrite any initialization done here
 static char esp_wifi_sta_ssid[WIFI_SSID_LENGTH] = "";
 static char esp_wifi_sta_pass[WIFI_PASS_LENGTH] = "";
+
+static char esp_wifi_ip_addr[16] = "";
 
 static char mqtt_broker_uri[257] = "";
 
@@ -117,90 +114,6 @@ char auth_buffer[512];
 //Read HTML files into char arrays
 extern const char html_ota[] asm("_binary_ota_html_start");
 extern const char html_index[] asm("_binary_index_html_start");
-
-
-// Reads saved wifi info from NVS and stores it in global variables
-// esp_wifi_sta_ssid and esp_wifi_sta_pass
-static void read_wifi_info_from_nvs()
-{
-    ESP_LOGI(TAG, "Opening Non-Volatile Storage (NVS) handle... ");
-    nvs_handle_t wifi_nvs_handle;
-    esp_err_t err = nvs_open(ESP_NVS_NAMESPACE, NVS_READONLY, &wifi_nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "Reading SSID from NVS ... ");
-        size_t required_length = sizeof(esp_wifi_sta_ssid);
-        err = nvs_get_str(wifi_nvs_handle, ESP_NVS_SSID_KEY, esp_wifi_sta_ssid, &required_length);
-        switch (err) {
-            case ESP_OK:
-                ESP_LOGI(TAG, "SSID = %s\n", esp_wifi_sta_ssid);
-                break;
-            case ESP_ERR_NVS_NOT_FOUND:
-                ESP_LOGI(TAG, "The SSID value is not initialized yet!\n");
-                break;
-            default :
-                ESP_LOGI(TAG, "Error (%s) reading!\n", esp_err_to_name(err));
-        }
-        ESP_LOGI(TAG, "Reading password from NVS ... ");
-        required_length = sizeof(esp_wifi_sta_pass);
-        err = nvs_get_str(wifi_nvs_handle, ESP_NVS_PASS_KEY, esp_wifi_sta_pass, &required_length);
-        switch (err) {
-            case ESP_OK:
-                ESP_LOGI(TAG, "Password = %s\n", esp_wifi_sta_pass);
-                break;
-            case ESP_ERR_NVS_NOT_FOUND:
-                ESP_LOGI(TAG, "The SSID value is not initialized yet!\n");
-                break;
-            default :
-                ESP_LOGI(TAG, "Error (%s) reading!\n", esp_err_to_name(err));
-        }
-        nvs_close(wifi_nvs_handle);
-    }
-}
-
-// Saves wifi data stored in global variables
-// esp_wifi_sta_ssid and esp_wifi_sta_pass to NVS
-static void save_wifi_info_to_nvs()
-{
-    ESP_LOGI(TAG, "Opening Non-Volatile Storage (NVS) handle... ");
-    nvs_handle_t wifi_nvs_handle;
-    esp_err_t err = nvs_open(ESP_NVS_NAMESPACE, NVS_READWRITE, &wifi_nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "Error (%s) opening NVS handle!\n", esp_err_to_name(err));
-    } else {
-        // Save SSID
-        ESP_LOGI(TAG, "Saving SSID to NVS ... ");
-        err = nvs_set_str(wifi_nvs_handle, ESP_NVS_SSID_KEY, esp_wifi_sta_ssid);
-        switch (err) {
-            case ESP_OK:
-                ESP_LOGI(TAG, "SSID saved!");
-                break;
-            default :
-                ESP_LOGI(TAG, "Error (%s) writing!\n", esp_err_to_name(err));
-        }
-        // Save password
-        ESP_LOGI(TAG, "Saving password to NVS ... ");
-        err = nvs_set_str(wifi_nvs_handle, ESP_NVS_PASS_KEY, esp_wifi_sta_pass);
-        switch (err) {
-            case ESP_OK:
-                ESP_LOGI(TAG, "Password saved!");
-                break;
-            default :
-                ESP_LOGI(TAG, "Error (%s) wiriting!\n", esp_err_to_name(err));
-        }
-        ESP_LOGI(TAG, "Committing updates in NVS ... ");
-        err = nvs_commit(wifi_nvs_handle);
-        switch (err) {
-            case ESP_OK:
-                ESP_LOGI(TAG, "Done");
-                break;
-            default :
-                ESP_LOGI(TAG, "Error (%s)\n", esp_err_to_name(err));
-        }
-        nvs_close(wifi_nvs_handle);
-    }
-}
 
 // Borrowed the HTTP authorization and OTA code in the
 // next few functions from another project
@@ -486,7 +399,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                             ESP_LOGI(TAG, "New PSK: %s", token_str);
                             strcpy(esp_wifi_sta_ssid, new_ssid);
                             strcpy(esp_wifi_sta_pass, token_str);
-                            save_wifi_info_to_nvs();
+                            save_wifi_info_to_nvs(esp_wifi_sta_ssid, esp_wifi_sta_pass);
                             new_wifi_info = 1;
                             sprintf(resp, "New SSID and Password set! Connecting now");
                         }
@@ -509,6 +422,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                 }
                 else {
                     strcpy(mqtt_broker_uri, token_str);
+                    save_mqtt_info_to_nvs(mqtt_broker_uri);
                     new_mqtt_info = 1;
                     ESP_LOGI(TAG, "MQTT Broker set!");
                     sprintf(resp, "MQTT Broker Set!");
@@ -519,75 +433,78 @@ static esp_err_t index_post_handler( httpd_req_t *req )
             if (num_tokens != 17) {
                 ESP_LOGI(TAG, "Wrong number of tokens for light setup message!");
             }
-            char cmp_str[12];
-            uint8_t index;
-            for (int i = 0; i < 4; i++){
-                index = (i * 4) + 1;
-                token_len = json_content[index].end - json_content[index].start;
-                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
-                strncpy(token_str, content+json_content[index].start, token_len);
-                token_str[token_len] = '\0';
-
-                sprintf(cmp_str, "light%d_name", i);
-                if (strcmp(cmp_str, token_str) != 0) {
-                    ESP_LOGI(TAG, "Token doesn't match: %s", token_str);
-                    sprintf(resp, "Error saving data");
-                    break;
-                }
-
-                index = (i * 4) + 2;
-                token_len = json_content[index].end - json_content[index].start;
-                if (token_len > 0) {
+            else {
+                char cmp_str[12];
+                uint8_t index;
+                for (int i = 0; i < 4; i++){
+                    index = (i * 4) + 1;
+                    token_len = json_content[index].end - json_content[index].start;
                     token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
                     strncpy(token_str, content+json_content[index].start, token_len);
                     token_str[token_len] = '\0';
 
-                    if (token_len > 12) {
-                        ESP_LOGI(TAG, "Name too long. Max 12 chars: %s", token_str);
+                    sprintf(cmp_str, "light%d_name", i);
+                    if (strcmp(cmp_str, token_str) != 0) {
+                        ESP_LOGI(TAG, "Token doesn't match: %s", token_str);
                         sprintf(resp, "Error saving data");
                         break;
                     }
-                    strcpy(light_data[i].name, token_str);
-                }
-                else {
-                    strcpy(light_data[i].name, "");
-                }
 
-                index = (i * 4) + 3;
-                token_len = json_content[index].end - json_content[index].start;
-                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
-                strncpy(token_str, content+json_content[index].start, token_len);
-                token_str[token_len] = '\0';
+                    index = (i * 4) + 2;
+                    token_len = json_content[index].end - json_content[index].start;
+                    if (token_len > 0) {
+                        token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                        strncpy(token_str, content+json_content[index].start, token_len);
+                        token_str[token_len] = '\0';
 
-                sprintf(cmp_str, "light%d_en", i);
-                if (strcmp(cmp_str, token_str) != 0) {
-                    ESP_LOGI(TAG, "Token doesn't match: %s", token_str);
-                    sprintf(resp, "Error saving data");
-                    break;
-                }
+                        if (token_len > 12) {
+                            ESP_LOGI(TAG, "Name too long. Max 12 chars: %s", token_str);
+                            sprintf(resp, "Error saving data");
+                            break;
+                        }
+                        strcpy(light_data[i].name, token_str);
+                    }
+                    else {
+                        strcpy(light_data[i].name, "");
+                    }
 
-                index = (i * 4) + 4;
-                token_len = json_content[index].end - json_content[index].start;
-                token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
-                strncpy(token_str, content+json_content[index].start, token_len);
-                token_str[token_len] = '\0';
+                    index = (i * 4) + 3;
+                    token_len = json_content[index].end - json_content[index].start;
+                    token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                    strncpy(token_str, content+json_content[index].start, token_len);
+                    token_str[token_len] = '\0';
 
-                if (strcmp(token_str, "true") == 0) {
-                    light_data[i].enabled = 1;
-                }
-                else if (strcmp(token_str, "false") == 0) {
-                    light_data[i].enabled = 0;
-                    light_data[i].duty_cycle = 0;
-                    lights_set_brightness(0, i);
-                    if (i == 3) {
-                        sprintf(resp, "Data saved!");
+                    sprintf(cmp_str, "light%d_en", i);
+                    if (strcmp(cmp_str, token_str) != 0) {
+                        ESP_LOGI(TAG, "Token doesn't match: %s", token_str);
+                        sprintf(resp, "Error saving data");
+                        break;
+                    }
+
+                    index = (i * 4) + 4;
+                    token_len = json_content[index].end - json_content[index].start;
+                    token_str = (char*)realloc(token_str, (token_len + 1) * sizeof(char));
+                    strncpy(token_str, content+json_content[index].start, token_len);
+                    token_str[token_len] = '\0';
+
+                    if (strcmp(token_str, "true") == 0) {
+                        light_data[i].enabled = 1;
+                    }
+                    else if (strcmp(token_str, "false") == 0) {
+                        light_data[i].enabled = 0;
+                        light_data[i].duty_cycle = 0;
+                        lights_set_brightness(0, i);
+                        if (i == 3) {
+                            sprintf(resp, "Data saved!");
+                        }
+                    }
+                    else {
+                        ESP_LOGI(TAG, "Invalid enabled string. Should be \"true\" or \"false\": %s", token_str);
+                        sprintf(resp, "Error saving data");
+                        break;
                     }
                 }
-                else {
-                    ESP_LOGI(TAG, "Invalid enabled string. Should be \"true\" or \"false\": %s", token_str);
-                    sprintf(resp, "Error saving data");
-                    break;
-                }
+                save_light_info_to_nvs(light_data);
             }
         }
         else {
@@ -630,6 +547,13 @@ static esp_err_t status_update_handler( httpd_req_t *req )
 \"enabled\": \"%d\",\
 \"duty_cycle\": \"%d\"\
 }\
+},\
+\"status\":\
+{\
+\"wifi_status\": \"%d\",\
+\"wifi_ssid\": \"%s\",\
+\"wifi_ip\": \"%s\",\
+\"mqtt_status\": \"%d\"\
 }\
 }",
         light_data[0].name,
@@ -643,7 +567,11 @@ static esp_err_t status_update_handler( httpd_req_t *req )
         light_data[2].duty_cycle,
         light_data[3].name,
         light_data[3].enabled,
-        light_data[3].duty_cycle);
+        light_data[3].duty_cycle,
+        wifi_connected + ap_mode,
+        ap_mode ? ap_ssid_name : esp_wifi_sta_ssid,
+        esp_wifi_ip_addr,
+        mqtt_connected);
     ESP_LOGI(TAG,  "Sending update. JSON length: %d", strlen(json_data));
     httpd_resp_send(req, json_data, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -745,6 +673,9 @@ static void disconnect_handler( void *arg, esp_event_base_t event_base, int32_t 
 static void connect_handler( void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data )
 {
     ESP_LOGI(TAG, "Connected!\n");
+    ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+    ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+    sprintf(esp_wifi_ip_addr, IPSTR, IP2STR(&event->ip_info.ip));
     wifi_connected = 1;
     httpd_handle_t *server = ( httpd_handle_t * ) arg;
 
@@ -793,14 +724,6 @@ static void initialise_mdns(void)
 static void wifi_task( void *Param )
 {
     ESP_LOGI(TAG,  "Wifi task starting\n" );
-
-    // Variable to store mac address string which is unique to every ESP
-    char mac_addr_str[13];
-    //Read MAC address
-    uint8_t mac_addr[8];
-    ESP_ERROR_CHECK(esp_read_mac(mac_addr, ESP_MAC_WIFI_STA));
-    sprintf(mac_addr_str, "%02x%02x%02x%02x%02x%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-    ESP_LOGI(TAG,  "ESP MAC address: %s", mac_addr_str);
   
     httpd_handle_t server = NULL;
   
@@ -851,9 +774,6 @@ static void wifi_task( void *Param )
         wifi_ap_config.ap.authmode = WIFI_AUTH_OPEN;
     }
 
-    // Append MAC address to end of AP SSID name
-    char ap_ssid_name[33];
-    sprintf(ap_ssid_name, "%s_%x%x%x%x%x%x", ESP_WIFI_AP_SSID, mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
     memcpy(wifi_ap_config.ap.ssid, ap_ssid_name, 32);
     wifi_ap_config.ap.ssid_len = strlen(ap_ssid_name);
 
@@ -1101,10 +1021,19 @@ void app_main( void )
     light_data[3].enabled = 1;
     light_data[3].duty_cycle = 0;
 
-    // Initialize wifi info from NVS
-    if (strcmp(esp_wifi_sta_ssid, "") == 0) {
-        read_wifi_info_from_nvs();
-    }
+    // Variable to store mac address string which is unique to every ESP
+    char mac_addr_str[13];
+    //Read MAC address
+    uint8_t mac_addr[8];
+    ESP_ERROR_CHECK(esp_read_mac(mac_addr, ESP_MAC_WIFI_STA));
+    sprintf(mac_addr_str, "%02x%02x%02x%02x%02x%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    ESP_LOGI(TAG,  "ESP MAC address: %s", mac_addr_str);
+
+    // Append MAC address to end of AP SSID name
+    sprintf(ap_ssid_name, "%s_%02x%02x%02x%02x%02x%02x", ESP_WIFI_AP_SSID, mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
+    // Initialize wifi, lights, and mqtt info from NVS
+    read_data_from_nvs(esp_wifi_sta_ssid, esp_wifi_sta_pass, light_data, mqtt_broker_uri);
   
     // Start wifi and ota tasks
     xTaskCreate( wifi_task, "wifi_task", 4096, NULL, 0, NULL );

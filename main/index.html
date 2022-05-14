@@ -24,11 +24,7 @@
             box-shadow: 0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor;
             transition: box-shadow 0.5s;
         }
-/*
-        .light-icon:hover .sun-solid {
-            box-shadow: -16px 0 0 -6px currentColor,  16px 0 0 -6px currentColor,  0 -16px 0 -6px currentColor,  0 16px 0 -6px currentColor,  -12px -12px 0 -6px currentColor,  -12px 12px 0 -6px currentColor,  12px -12px 0 -6px currentColor,  12px 12px 0 -6px currentColor;
-        }
-*/
+
         .light-card {
             box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
             transition: 0.3s;
@@ -116,6 +112,14 @@
             font-size: large;
         }
 
+        .dot {
+            height: 12px;
+            width: 12px;
+            background-color: #191818;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
         /*
         Add transition to containers so they can push in and out.
         */
@@ -138,12 +142,12 @@
             padding-left: 0;
         }
             #layout.active #menu {
-                left: 150px;
-                width: 150px;
+                left: 200px;
+                width: 200px;
             }
 
             #layout.active .menu-link {
-                left: 150px;
+                left: 200px;
             }
         /*
         The content `<div>` is where all your content goes.
@@ -191,8 +195,8 @@
         */
 
         #menu {
-            margin-left: -150px; /* "#menu" width */
-            width: 150px;
+            margin-left: -200px; /* "#menu" width */
+            width: 200px;
             position: fixed;
             top: 0;
             left: 0;
@@ -330,21 +334,21 @@
             }
 
             #layout {
-                padding-left: 150px; /* left col width "#menu" */
+                padding-left: 200px; /* left col width "#menu" */
                 left: 0;
             }
             #menu {
-                left: 150px;
+                left: 200px;
             }
 
             .menu-link {
                 position: fixed;
-                left: 150px;
+                left: 200px;
                 display: none;
             }
 
             #layout.active .menu-link {
-                left: 150px;
+                left: 200px;
             }
         }
 
@@ -357,7 +361,7 @@
             */
             #layout.active {
                 position: relative;
-                left: 150px;
+                left: 200px;
             }
         }
     </style>
@@ -381,6 +385,21 @@
                 <li class="pure-menu-item" id = "lights_link"><a href="#lights" class="pure-menu-link">Lights Setup</a></li>
                 <li class="pure-menu-item" id = "mqtt_link"><a href="#mqtt" class="pure-menu-link">MQTT Setup</a></li>
                 <li class="pure-menu-item" id = "ota_link"><a href="/ota" class="pure-menu-link">Update FW</a></li>
+                <li class="menu-item-divided"> </li>
+                <br><br>
+                <div id="status" style="text-align: center">
+                    <div>
+                        <span class="dot" id="wifi_dot" style="display: inline-block"></span>
+                        <div id="wifi_status" style="display: inline-block"></div>
+                    </div>
+                    <div id="wifi_ssid"></div>
+                    <div id="wifi_ip"></div>
+                    <br>
+                    <div>
+                        <span class="dot" id="mqtt_dot" style="display: inline-block"></span>
+                        <div id="mqtt_status" style="display: inline-block"></div>
+                    </div>
+                </div>
             </ul>
         </div>
     </div>
@@ -388,7 +407,6 @@
     <div id="main">
         <div class="header">
             <h1>Smart Light Control</h1>
-            <h2 id="page_name">HOME</h3>
         </div>
 
         <div class="content">
@@ -524,7 +542,7 @@
                         <button type="submit" class="pure-button pure-button-primary">Connect</button>
                     </fieldset>
                 </form>
-                <div id="mqtt_status" class="green-warning"></div>
+                <div id="mqtt_update_status" class="green-warning"></div>
             </div>
 
         </div>
@@ -595,13 +613,13 @@ function changePage(name) {
     menu_link.classList.add("menu-item-divided");
     menu_link.classList.add("pure-menu-selected");
     document.getElementById(name + "_page").style.display = "block";
-    document.getElementById("page_name").textContent = name.toUpperCase();
 };
 
 // Toggle the light on or off when it is clicked
-function toggleLight(lightName) {
+function toggleLight(light) {
     clearInterval(status_update_interval);
-    let slider = document.getElementById(lightName + "_slider");
+    status_update_interval = null;
+    let slider = document.getElementById(light + "_slider");
     var newVal;
     if (slider.value > 0) {
         newVal = 0;
@@ -609,42 +627,33 @@ function toggleLight(lightName) {
     else {
         newVal = 255;
     }
-    setLight(lightName, newVal);
-    slider.value = newVal;
-    setBubble(slider, document.getElementById(lightName + "_value"));
-    sendLightData(lightName, newVal);
+    setLight(light, newVal);
+    sendLightData(light, newVal);
     status_update_interval = setInterval(statusUpdate, 1000);
 }
 
 //Function for when light range slider is changed
 function lightSlider(light) {
     clearInterval(status_update_interval);
-    var lightValue = document.getElementById(light + "_slider").value;
-    if (lightValue > 0) {
-        document.getElementById(light + "_sun").style.boxShadow = "-16px 0 0 -6px currentColor,  16px 0 0 -6px currentColor,  0 -16px 0 -6px currentColor,  0 16px 0 -6px currentColor,  -12px -12px 0 -6px currentColor,  -12px 12px 0 -6px currentColor,  12px -12px 0 -6px currentColor,  12px 12px 0 -6px currentColor";
-        document.getElementById(light + "_card").style.backgroundColor = "#FFFACD";
-    }
-    else {
-        document.getElementById(light + "_sun").style.boxShadow = "0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor";
-        document.getElementById(light + "_card").style.backgroundColor = "#ccc";
-    }
-    sendLightData(light, lightValue);
+    status_update_interval = null;
+    var newVal = document.getElementById(light + "_slider").value;
+    setLight(light, newVal)
+    sendLightData(light, newVal);
     status_update_interval = setInterval(statusUpdate, 1000);
 };
 
 // Set light to a new value and change display accordingly
 function setLight(light, newVal) {
-    let prev_val = document.getElementById(light + "_slider").value;
-    if (newVal != prev_val) {
-        document.getElementById(light + "_slider").value = newVal;
-        if (newVal == "0" && prev_val > "0") {
-            document.getElementById(light + "_sun").style.boxShadow = "0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor";
-            document.getElementById(light + "_card").style.backgroundColor = "#ccc";
-        }
-        else if (newVal > "0" && prev_val == "0") {
-            document.getElementById(light + "_sun").style.boxShadow = "-16px 0 0 -6px currentColor,  16px 0 0 -6px currentColor,  0 -16px 0 -6px currentColor,  0 16px 0 -6px currentColor,  -12px -12px 0 -6px currentColor,  -12px 12px 0 -6px currentColor,  12px -12px 0 -6px currentColor,  12px 12px 0 -6px currentColor";
-            document.getElementById(light + "_card").style.backgroundColor = "#FFFACD";
-        }
+    let slider = document.getElementById(light + "_slider");
+    slider.value = newVal;
+    setBubble(slider, document.getElementById(light + "_value"));
+    if (newVal == "0") {
+        document.getElementById(light + "_sun").style.boxShadow = "0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor,  0 0 0 -6px currentColor";
+        document.getElementById(light + "_card").style.backgroundColor = "#ccc";
+    }
+    else if (newVal > "0") {
+        document.getElementById(light + "_sun").style.boxShadow = "-16px 0 0 -6px currentColor,  16px 0 0 -6px currentColor,  0 -16px 0 -6px currentColor,  0 16px 0 -6px currentColor,  -12px -12px 0 -6px currentColor,  -12px 12px 0 -6px currentColor,  12px -12px 0 -6px currentColor,  12px 12px 0 -6px currentColor";
+        document.getElementById(light + "_card").style.backgroundColor = "#FFFACD";
     }
 }
 
@@ -714,7 +723,7 @@ function newLightData() {
 }
 
 function mqttConnect() {
-    let status = document.getElementById("mqtt_status");
+    let status = document.getElementById("mqtt_update_status");
     status.textContent = "Connecting to broker...";
     let mqttBroker = document.getElementById("mqtt_broker").value;
     var data = `{"mqtt_broker": "${mqttBroker}"}`;
@@ -771,19 +780,59 @@ function setLightProperties(light, name, enabled) {
     }
 }
 
+function setStatus(obj) {
+    let wifiStatus = document.getElementById("wifi_status");
+    let wifiDot = document.getElementById("wifi_dot");
+    let wifiSsid = document.getElementById("wifi_ssid");
+    let wifiIp = document.getElementById("wifi_ip");
+    let mqttStatus = document.getElementById("mqtt_status");
+    let mqttDot = document.getElementById("mqtt_dot");
+    if (obj["wifi_status"] == "1") {
+        wifiStatus.textContent = " Wifi Connected";
+        wifiDot.style.backgroundColor = "#008000";
+        wifiSsid.textContent = obj["wifi_ssid"];
+        wifiIp.textContent = obj["wifi_ip"];
+    }
+    else if (obj["wifi_status"] == "2") {
+        wifiStatus.textContent = " AP Mode";
+        wifiDot.style.backgroundColor = "#008000";
+        wifiSsid.textContent = obj["wifi_ssid"];
+        wifiIp.textContent = obj["wifi_ip"];
+    }
+    else {
+        wifiStatus.textContent = " Wifi Disconnected";
+        wifiDot.style.backgroundColor = "#FF0000";
+        wifiSsid.textContent = "";
+        wifiIp.textContent = "";
+    }
+    if (obj["mqtt_status"] == "1") {
+        mqttStatus.textContent = " MQTT Connected";
+        mqttDot.style.backgroundColor = "#008000";
+    }
+    else {
+        mqttStatus.textContent = " MQTT Disconnected";
+        mqttDot.style.backgroundColor = "#FF0000";
+    }
+}
+
 function statusUpdate() {
     var xhttp = new XMLHttpRequest();
     xhttp.onreadystatechange = function() {
         if (this.readyState == 4 && this.status == 200) {
             const json_obj = JSON.parse(this.responseText);
-            setLight("light0", json_obj["lights"]["light0"]["duty_cycle"]);
-            setLight("light1", json_obj["lights"]["light1"]["duty_cycle"]);
-            setLight("light2", json_obj["lights"]["light2"]["duty_cycle"]);
-            setLight("light3", json_obj["lights"]["light3"]["duty_cycle"]);
-            setLightProperties("light0", json_obj["lights"]["light0"]["name"], json_obj["lights"]["light0"]["enabled"]);
-            setLightProperties("light1", json_obj["lights"]["light1"]["name"], json_obj["lights"]["light1"]["enabled"]);
-            setLightProperties("light2", json_obj["lights"]["light2"]["name"], json_obj["lights"]["light2"]["enabled"]);
-            setLightProperties("light3", json_obj["lights"]["light3"]["name"], json_obj["lights"]["light3"]["enabled"]);
+            if (status_update_interval != null && json_obj["lights"]) {
+                setLight("light0", json_obj["lights"]["light0"]["duty_cycle"]);
+                setLight("light1", json_obj["lights"]["light1"]["duty_cycle"]);
+                setLight("light2", json_obj["lights"]["light2"]["duty_cycle"]);
+                setLight("light3", json_obj["lights"]["light3"]["duty_cycle"]);
+                setLightProperties("light0", json_obj["lights"]["light0"]["name"], json_obj["lights"]["light0"]["enabled"]);
+                setLightProperties("light1", json_obj["lights"]["light1"]["name"], json_obj["lights"]["light1"]["enabled"]);
+                setLightProperties("light2", json_obj["lights"]["light2"]["name"], json_obj["lights"]["light2"]["enabled"]);
+                setLightProperties("light3", json_obj["lights"]["light3"]["name"], json_obj["lights"]["light3"]["enabled"]);
+            }
+            if (json_obj["status"]) {
+                setStatus(json_obj["status"]);
+            }
         }
     }
     xhttp.open("GET", "status_update", true);
