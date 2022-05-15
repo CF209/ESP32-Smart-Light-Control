@@ -535,10 +535,12 @@
 
             <div id="mqtt_page" class="page" style="display: none">
                 <h2 class="content-subhead">MQTT Setup</h2>
+                <p id="mqtt_saved_broker"></p>
                 <form class="pure-form pure-form-stacked" onsubmit="mqttConnect();return false">
                     <fieldset>
-                        <label for="ssid">MQTT Broker URI<br>For example: mqtt://192.168.1.101:1883</label>
+                        <label for="ssid">Update MQTT Broker URI:</label>
                         <input type="text" id="mqtt_broker" placeholder="MQTT Broker" required="" style="margin: 0.25em auto;" maxlength="256"/>
+                        <label>Example URI: mqtt://192.168.1.101:1883</label>
                         <button type="submit" class="pure-button pure-button-primary">Connect</button>
                     </fieldset>
                 </form>
@@ -615,8 +617,11 @@ function changePage(name) {
     document.getElementById(name + "_page").style.display = "block";
 };
 
+var ignore_next_light_update = false;
+
 // Toggle the light on or off when it is clicked
 function toggleLight(light) {
+    ignore_next_light_update = true;
     clearInterval(status_update_interval);
     status_update_interval = null;
     let slider = document.getElementById(light + "_slider");
@@ -629,17 +634,18 @@ function toggleLight(light) {
     }
     setLight(light, newVal);
     sendLightData(light, newVal);
-    status_update_interval = setInterval(statusUpdate, 1000);
+    status_update_interval = setInterval(statusUpdate, 2000);
 }
 
 //Function for when light range slider is changed
 function lightSlider(light) {
+    ignore_next_light_update = true;
     clearInterval(status_update_interval);
     status_update_interval = null;
     var newVal = document.getElementById(light + "_slider").value;
     setLight(light, newVal)
     sendLightData(light, newVal);
-    status_update_interval = setInterval(statusUpdate, 1000);
+    status_update_interval = setInterval(statusUpdate, 2000);
 };
 
 // Set light to a new value and change display accordingly
@@ -673,7 +679,7 @@ function sendLightData(light, val) {
 // Function for when new wifi data is entered
 function newWifi() {
     let status = document.getElementById("wifi_update_status");
-    status.textContent = "Saving Wifi info";
+    status.textContent = "Saving Wifi info. Server will disconnect";
     let new_ssid = document.getElementById("ssid").value;
     let new_password = document.getElementById("password").value;
     var data = `{"ssid": "${new_ssid}", "psk": "${new_password}"}`;
@@ -724,7 +730,7 @@ function newLightData() {
 
 function mqttConnect() {
     let status = document.getElementById("mqtt_update_status");
-    status.textContent = "Connecting to broker...";
+    status.textContent = "Saving broker URI...";
     let mqttBroker = document.getElementById("mqtt_broker").value;
     var data = `{"mqtt_broker": "${mqttBroker}"}`;
     xhr = new XMLHttpRequest();
@@ -787,6 +793,7 @@ function setStatus(obj) {
     let wifiIp = document.getElementById("wifi_ip");
     let mqttStatus = document.getElementById("mqtt_status");
     let mqttDot = document.getElementById("mqtt_dot");
+    let mqqtBroker = document.getElementById("mqtt_saved_broker");
     if (obj["wifi_status"] == "1") {
         wifiStatus.textContent = " Wifi Connected";
         wifiDot.style.backgroundColor = "#008000";
@@ -813,6 +820,12 @@ function setStatus(obj) {
         mqttStatus.textContent = " MQTT Disconnected";
         mqttDot.style.backgroundColor = "#FF0000";
     }
+    if (obj["mqtt_uri"] == "") {
+        mqqtBroker.textContent = "No broker saved";
+    }
+    else {
+        mqqtBroker.textContent = "Current broker: " + obj["mqtt_uri"];
+    }
 }
 
 function statusUpdate() {
@@ -820,7 +833,7 @@ function statusUpdate() {
     xhttp.onreadystatechange = function() {
         if (this.readyState == 4 && this.status == 200) {
             const json_obj = JSON.parse(this.responseText);
-            if (status_update_interval != null && json_obj["lights"]) {
+            if (status_update_interval != null && json_obj["lights"] && !(ignore_next_light_update)) {
                 setLight("light0", json_obj["lights"]["light0"]["duty_cycle"]);
                 setLight("light1", json_obj["lights"]["light1"]["duty_cycle"]);
                 setLight("light2", json_obj["lights"]["light2"]["duty_cycle"]);
@@ -832,6 +845,9 @@ function statusUpdate() {
             }
             if (json_obj["status"]) {
                 setStatus(json_obj["status"]);
+            }
+            if (ignore_next_light_update) {
+                ignore_next_light_update = false;
             }
         }
     }
@@ -869,7 +885,7 @@ document.getElementById("light3_icon").addEventListener('click', (e) => {
 
 // Read light data from server on page load and every second
 document.addEventListener("DOMContentLoaded", statusUpdate);
-var status_update_interval = setInterval(statusUpdate, 1000); //1000mSeconds update rate
+var status_update_interval = setInterval(statusUpdate, 2000); //2000mSeconds update rate
 
 </script>
 

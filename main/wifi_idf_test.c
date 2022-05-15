@@ -41,6 +41,10 @@ typedef struct
   char name[13];
   uint8_t enabled;
   int duty_cycle;
+  char mqtt_config_topic[50];
+  char mqtt_config_payload[200];
+  char mqtt_command_topic[50];
+  char mqtt_state_topic[50];
 } light_info_t;
 
 // Moved some functions to separate files to clean up code
@@ -60,6 +64,7 @@ typedef struct
 
 // Variable to store the full SSID with MAC address
 static char ap_ssid_name[33];
+static char mac_addr_str[13];
 
 // Hostname for mDNS service. "my-esp32" becomes http://my-esp32.local/
 #define ESP_HOSTNAME    "my-esp32"
@@ -114,6 +119,21 @@ char auth_buffer[512];
 //Read HTML files into char arrays
 extern const char html_ota[] asm("_binary_ota_html_start");
 extern const char html_index[] asm("_binary_index_html_start");
+
+static void set_mqtt_config_payload(uint8_t light_num)
+{
+    sprintf(light_data[light_num].mqtt_config_payload, "\
+{\
+\"~\": \"homeassistant/light/%s/light%d\",\
+\"name\": \"%s\",\
+\"unique_id\": \"light%d_%s\",\
+\"cmd_t\": \"~/set\",\
+\"stat_t\": \"~/state\",\
+\"schema\": \"json\",\
+\"brightness\": true\
+}",
+        mac_addr_str, light_num, light_data[light_num].name, light_num, mac_addr_str);
+}
 
 // Borrowed the HTTP authorization and OTA code in the
 // next few functions from another project
@@ -463,9 +483,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                             break;
                         }
                         strcpy(light_data[i].name, token_str);
-                    }
-                    else {
-                        strcpy(light_data[i].name, "");
+                        set_mqtt_config_payload(i);
                     }
 
                     index = (i * 4) + 3;
@@ -553,7 +571,8 @@ static esp_err_t status_update_handler( httpd_req_t *req )
 \"wifi_status\": \"%d\",\
 \"wifi_ssid\": \"%s\",\
 \"wifi_ip\": \"%s\",\
-\"mqtt_status\": \"%d\"\
+\"mqtt_status\": \"%d\",\
+\"mqtt_uri\": \"%s\"\
 }\
 }",
         light_data[0].name,
@@ -571,7 +590,8 @@ static esp_err_t status_update_handler( httpd_req_t *req )
         wifi_connected + ap_mode,
         ap_mode ? ap_ssid_name : esp_wifi_sta_ssid,
         esp_wifi_ip_addr,
-        mqtt_connected);
+        mqtt_connected,
+        mqtt_broker_uri);
     ESP_LOGI(TAG,  "Sending update. JSON length: %d", strlen(json_data));
     httpd_resp_send(req, json_data, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -897,27 +917,21 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_CONNECTED:
         mqtt_connected = 1;
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
-        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+        for (uint8_t i = 0; i < 4; i++) {
+            msg_id = esp_mqtt_client_publish(client, light_data[i].mqtt_config_topic, light_data[i].mqtt_config_payload, 
+            0, 1, 1);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-        msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
-        ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+            msg_id = esp_mqtt_client_subscribe(client, light_data[i].mqtt_command_topic, 1);
+            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+        }
         break;
     case MQTT_EVENT_DISCONNECTED:
         mqtt_connected = 0;
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         break;
-
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-        msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
-        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
         break;
     case MQTT_EVENT_UNSUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
@@ -991,6 +1005,43 @@ static void mqtt_task(void *Param)
     }
 }
 
+static void initialize_data()
+{
+    //Read MAC address
+    uint8_t mac_addr[8];
+    ESP_ERROR_CHECK(esp_read_mac(mac_addr, ESP_MAC_WIFI_STA));
+    sprintf(mac_addr_str, "%02x%02x%02x%02x%02x%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    ESP_LOGI(TAG,  "ESP MAC address: %s", mac_addr_str);
+
+    // Append MAC address to end of AP SSID name
+    sprintf(ap_ssid_name, "%s_%s", ESP_WIFI_AP_SSID, mac_addr_str);
+
+    sprintf(light_data[0].name, "Light 0");
+    light_data[0].enabled = 1;
+    light_data[0].duty_cycle = 0;
+    sprintf(light_data[1].name, "Light 1");
+    light_data[1].enabled = 1;
+    light_data[1].duty_cycle = 0;
+    sprintf(light_data[2].name, "Light 2");
+    light_data[2].enabled = 1;
+    light_data[2].duty_cycle = 0;
+    sprintf(light_data[3].name, "Light 3");
+    light_data[3].enabled = 1;
+    light_data[3].duty_cycle = 0;
+    
+
+    // Initialize wifi, lights, and mqtt info from NVS
+    read_data_from_nvs(esp_wifi_sta_ssid, esp_wifi_sta_pass, light_data, mqtt_broker_uri);
+
+    // Set up MQTT config topics and payloads
+    for (int i = 0; i < 4; i++) {
+        sprintf(light_data[i].mqtt_config_topic, "homeassistant/light/%s/light%d/config", mac_addr_str, i);
+        set_mqtt_config_payload(i);
+        sprintf(light_data[i].mqtt_command_topic, "homeassistant/light/%s/light%d/set", mac_addr_str, i);
+        sprintf(light_data[i].mqtt_state_topic, "homeassistant/light/%s/light%d/state", mac_addr_str, i);
+    }
+
+}
 
 void app_main( void )
 { 
@@ -1008,32 +1059,7 @@ void app_main( void )
     // Initialize LED outputs
     lights_ledc_init();
 
-    sprintf(light_data[0].name, "Light 0");
-    light_data[0].enabled = 1;
-    light_data[0].duty_cycle = 0;
-    sprintf(light_data[1].name, "Light 1");
-    light_data[1].enabled = 1;
-    light_data[1].duty_cycle = 0;
-    sprintf(light_data[2].name, "Light 2");
-    light_data[2].enabled = 1;
-    light_data[2].duty_cycle = 0;
-    sprintf(light_data[3].name, "Light 3");
-    light_data[3].enabled = 1;
-    light_data[3].duty_cycle = 0;
-
-    // Variable to store mac address string which is unique to every ESP
-    char mac_addr_str[13];
-    //Read MAC address
-    uint8_t mac_addr[8];
-    ESP_ERROR_CHECK(esp_read_mac(mac_addr, ESP_MAC_WIFI_STA));
-    sprintf(mac_addr_str, "%02x%02x%02x%02x%02x%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-    ESP_LOGI(TAG,  "ESP MAC address: %s", mac_addr_str);
-
-    // Append MAC address to end of AP SSID name
-    sprintf(ap_ssid_name, "%s_%02x%02x%02x%02x%02x%02x", ESP_WIFI_AP_SSID, mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-
-    // Initialize wifi, lights, and mqtt info from NVS
-    read_data_from_nvs(esp_wifi_sta_ssid, esp_wifi_sta_pass, light_data, mqtt_broker_uri);
+    initialize_data();
   
     // Start wifi and ota tasks
     xTaskCreate( wifi_task, "wifi_task", 4096, NULL, 0, NULL );

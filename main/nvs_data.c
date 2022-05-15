@@ -35,6 +35,10 @@ typedef struct
   char name[13];
   uint8_t enabled;
   int duty_cycle;
+  char mqtt_config_topic[50];
+  char mqtt_config_payload[200];
+  char mqtt_command_topic[50];
+  char mqtt_state_topic[50];
 } light_info_t;
 
 // Debug tag for log statements
