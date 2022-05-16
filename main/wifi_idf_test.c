@@ -1,17 +1,3 @@
-/*
-WIFI IDF Test
-This project was created to test out some basic functions on the ESP32 including:
-  - Wifi station and AP mode and switching between the two
-  - OTA updates
-  - NVS storing data
-  - LED PWM outputs
-  - HTTP servers
-
-TO DO:
- - Update OTA page to fit into new website format
-*/
-
-
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <esp_log.h>
