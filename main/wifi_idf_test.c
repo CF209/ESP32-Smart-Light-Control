@@ -97,6 +97,7 @@ static char esp_wifi_sta_pass[WIFI_PASS_LENGTH] = "";
 static char esp_wifi_ip_addr[16] = "";
 
 static char mqtt_broker_uri[257] = "";
+esp_mqtt_client_handle_t mqtt_client;
 
 // Struct to store authorization details for OTA
 typedef struct
@@ -122,7 +123,8 @@ extern const char html_index[] asm("_binary_index_html_start");
 
 static void set_mqtt_config_payload(uint8_t light_num)
 {
-    sprintf(light_data[light_num].mqtt_config_payload, "\
+    if (light_data[light_num].enabled == 1) {
+        sprintf(light_data[light_num].mqtt_config_payload, "\
 {\
 \"~\": \"homeassistant/light/%s/light%d\",\
 \"name\": \"%s\",\
@@ -132,7 +134,34 @@ static void set_mqtt_config_payload(uint8_t light_num)
 \"schema\": \"json\",\
 \"brightness\": true\
 }",
-        mac_addr_str, light_num, light_data[light_num].name, light_num, mac_addr_str);
+            mac_addr_str, light_num, light_data[light_num].name, light_num, mac_addr_str);
+    }
+    else {
+        sprintf(light_data[light_num].mqtt_config_payload, "");
+    }
+}
+
+static void set_light(uint8_t num, uint8_t brightness) {
+    if (num < 4) {
+        ESP_LOGI(TAG, "Setting light%d to %d", num, brightness);
+        lights_set_brightness(brightness, num);
+        light_data[num].duty_cycle = brightness;
+
+        if (mqtt_connected == 1) {
+            char mqtt_state_payload[36];
+            if (brightness > 0) {
+                sprintf(mqtt_state_payload, "{\"state\": \"ON\", \"brightness\": %d}", brightness);
+            }
+            else {
+                sprintf(mqtt_state_payload, "{\"state\": \"OFF\", \"brightness\": 0}");
+            }
+            int msg_id = esp_mqtt_client_publish(mqtt_client, light_data[num].mqtt_state_topic, mqtt_state_payload, 0, 1, 0);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+        }
+    }
+    else {
+        ESP_LOGI(TAG, "Light num %d or brightness %d out of range", num, brightness);
+    }
 }
 
 // Borrowed the HTTP authorization and OTA code in the
@@ -370,8 +399,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                             ESP_LOGI(TAG, "Light value %d out of range! Must be 0-255", light_val);
                         }
                         else {
-                            lights_set_brightness(light_val, light_num);
-                            light_data[light_num].duty_cycle = light_val;
+                            set_light(light_num, light_val);
                             sprintf(resp, "Light updated");
                         }
                     }
@@ -483,7 +511,6 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                             break;
                         }
                         strcpy(light_data[i].name, token_str);
-                        set_mqtt_config_payload(i);
                     }
 
                     index = (i * 4) + 3;
@@ -510,8 +537,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                     }
                     else if (strcmp(token_str, "false") == 0) {
                         light_data[i].enabled = 0;
-                        light_data[i].duty_cycle = 0;
-                        lights_set_brightness(0, i);
+                        set_light(i, 0);
                         if (i == 3) {
                             sprintf(resp, "Data saved!");
                         }
@@ -520,6 +546,11 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                         ESP_LOGI(TAG, "Invalid enabled string. Should be \"true\" or \"false\": %s", token_str);
                         sprintf(resp, "Error saving data");
                         break;
+                    }
+                    set_mqtt_config_payload(i);
+                    if (mqtt_connected == 1) {
+                        int msg_id = esp_mqtt_client_publish(mqtt_client, light_data[i].mqtt_config_topic, light_data[i].mqtt_config_payload, 0, 1, 1);
+                        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
                     }
                 }
                 save_light_info_to_nvs(light_data);
@@ -911,19 +942,27 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 {
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
-    esp_mqtt_client_handle_t client = event->client;
     int msg_id;
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         mqtt_connected = 1;
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        char mqtt_state_payload[36];
         for (uint8_t i = 0; i < 4; i++) {
-            msg_id = esp_mqtt_client_publish(client, light_data[i].mqtt_config_topic, light_data[i].mqtt_config_payload, 
-            0, 1, 1);
+            msg_id = esp_mqtt_client_publish(mqtt_client, light_data[i].mqtt_config_topic, light_data[i].mqtt_config_payload, 0, 1, 1);
             ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
-            msg_id = esp_mqtt_client_subscribe(client, light_data[i].mqtt_command_topic, 1);
+            msg_id = esp_mqtt_client_subscribe(mqtt_client, light_data[i].mqtt_command_topic, 1);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+
+            if (light_data[i].duty_cycle > 0) {
+                sprintf(mqtt_state_payload, "{\"state\": \"ON\", \"brightness\": %d}", light_data[i].duty_cycle);
+            }
+            else {
+                sprintf(mqtt_state_payload, "{\"state\": \"OFF\", \"brightness\": %d}", light_data[i].duty_cycle);
+            }
+            msg_id = esp_mqtt_client_publish(mqtt_client, light_data[i].mqtt_state_topic, mqtt_state_payload, 0, 1, 0);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
         }
         break;
     case MQTT_EVENT_DISCONNECTED:
@@ -943,6 +982,77 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
+        for (uint8_t i = 0; i < 4; i++) {
+            if (strncmp(event->topic, light_data[i].mqtt_command_topic, event->topic_len) == 0 && event->topic_len == strlen(light_data[i].mqtt_command_topic)) {
+                // Parse JSON data
+                jsmn_parser json_parser;
+                jsmntok_t json_content[32];
+                int num_tokens;
+
+                jsmn_init(&json_parser);
+                num_tokens = jsmn_parse(&json_parser, event->data, event->data_len, json_content, 32);
+
+                int token_len = 0;
+                char* token_str = NULL;
+
+                if (num_tokens < 3) {
+                    ESP_LOGI(TAG, "Error parsing JSON data");
+                }
+                else {
+                    token_len = json_content[1].end - json_content[1].start;
+                    token_str = (char*)malloc((token_len + 1) * sizeof(char));
+                    strncpy(token_str, event->data+json_content[1].start, token_len);
+                    token_str[token_len] = '\0';
+
+                    ESP_LOGI(TAG, "Token str: %s", token_str);
+
+                    if (strcmp(token_str, "state") == 0) {
+                        token_len = json_content[2].end - json_content[2].start;
+                        token_str = (char*)malloc((token_len + 1) * sizeof(char));
+                        strncpy(token_str, event->data+json_content[2].start, token_len);
+                        token_str[token_len] = '\0';
+
+                        ESP_LOGI(TAG, "Token str: %s", token_str);
+
+                        if (strcmp(token_str, "OFF") == 0) {
+                            set_light(i, 0);                            
+                        }
+                        else if (strcmp(token_str, "ON") == 0 && num_tokens == 3) {
+                            set_light(i, 255);
+                        }
+                        else if (strcmp(token_str, "ON") == 0) {
+                            token_len = json_content[3].end - json_content[3].start;
+                            token_str = (char*)malloc((token_len + 1) * sizeof(char));
+                            strncpy(token_str, event->data+json_content[3].start, token_len);
+                            token_str[token_len] = '\0';
+
+                            ESP_LOGI(TAG, "Token str: %s", token_str);
+
+                            if (strcmp(token_str, "brightness") == 0) {
+                                token_len = json_content[4].end - json_content[4].start;
+                                token_str = (char*)malloc((token_len + 1) * sizeof(char));
+                                strncpy(token_str, event->data+json_content[4].start, token_len);
+                                token_str[token_len] = '\0';
+
+                                ESP_LOGI(TAG, "Token str: %s", token_str);
+
+                                set_light(i, atoi(token_str));
+                                ESP_LOGI(TAG, "Setting light%d brightness to %s", i, token_str);
+                            }
+                            else{
+                                ESP_LOGI(TAG, "JSON data doesn't match expected format");
+                            }
+                        }
+                        else {
+                            ESP_LOGI(TAG, "Unrecognized light state: %s", token_str);
+                        }
+                    }
+                    else {
+                        ESP_LOGI(TAG, "JSON data doesn't match expected format");
+                    }
+                }
+            }
+        }
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -969,17 +1079,17 @@ static void mqtt_task(void *Param)
         .uri = "",
     };
     ESP_LOGI(TAG, "Setting up MQTT client");
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     ESP_LOGI(TAG, "Registering MQTT event handler");
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     ESP_LOGI(TAG, "Starting MQTT loop");
     int retry_counter = 30;
     const uint32_t task_delay_ms = 1000;
     while(1) {
         if (new_mqtt_info == 1 && mqtt_connected == 1) {
             ESP_LOGI(TAG, "New MQTT info detected. Disconnecting MQTT");
-            esp_mqtt_client_disconnect(client);
-            esp_mqtt_client_stop(client);
+            esp_mqtt_client_disconnect(mqtt_client);
+            esp_mqtt_client_stop(mqtt_client);
             new_mqtt_info = 0;
         }
         else if (new_mqtt_info == 1) {
@@ -989,14 +1099,14 @@ static void mqtt_task(void *Param)
         if (wifi_connected == 1 && ap_mode == 0 && mqtt_connected == 0 && strcmp(mqtt_broker_uri, "") != 0 && retry_counter >= 30) {
             retry_counter = 0;
             ESP_LOGI(TAG, "Starting MQTT client");
-            esp_mqtt_client_set_uri(client, mqtt_broker_uri);
-            esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-            esp_mqtt_client_start(client);
+            esp_mqtt_client_set_uri(mqtt_client, mqtt_broker_uri);
+            esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+            esp_mqtt_client_start(mqtt_client);
         }
         if (mqtt_connected == 1 && (wifi_connected == 0 || ap_mode == 1)) {
             ESP_LOGI(TAG, "Wifi disconnected. Stopping MQTT client");
-            esp_mqtt_client_disconnect(client);
-            esp_mqtt_client_stop(client);
+            esp_mqtt_client_disconnect(mqtt_client);
+            esp_mqtt_client_stop(mqtt_client);
         }
         if (retry_counter < 30) {
             retry_counter++;
