@@ -22,6 +22,7 @@
 #include "jsmn.h"
 
 // Struct for saving light info
+// Needs to be defined before including nvs_data.h
 typedef struct
 {
   char name[13];
@@ -33,38 +34,41 @@ typedef struct
   char mqtt_state_topic[50];
 } light_info_t;
 
-// Moved some functions to separate files to clean up code
+// Moved some functions for controling PWM outputs and
+// accessing NVS data to separate files to clean up code
 #include "lights_ledc.h"
 #include "nvs_data.h"
+
+// Debug tag for log statements
+static const char *TAG = "wifi idf test";
 
 // Specify the max time and max number of retries for connecting
 // to wifi before switching to AP mode, whichever comes first
 #define ESP_MAXIMUM_CONNECT_RETRY  10
-#define ESP_WIFI_CONNECT_WAIT      15000
+#define ESP_WIFI_CONNECT_WAIT      15000 // In ms
+
+// Tracks the number of retries for connecting to Wifi
+static uint8_t wifi_retry_count = 0;
 
 // Wifi data for AP mode. The program adds the ESP MAC address to the end of the SSID to avoid conflicts
-#define ESP_WIFI_AP_SSID           "esp_wifi"
+#define ESP_WIFI_AP_SSID           "esp_wifi"  
 #define ESP_WIFI_AP_PASS           "password"
 #define ESP_WIFI_AP_CHANNEL        1
 #define ESP_WIFI_AP_MAX_STA_CONN   4
 
 // Variable to store the full SSID with MAC address
-static char ap_ssid_name[33];
+static char ap_ssid_name[33]; // Will become "esp_wifi_xxxxxxxxxxxx" where the x's are the MAC address
 static char mac_addr_str[13];
 
-// Hostname for mDNS service. "my-esp32" becomes http://my-esp32.local/
-#define ESP_HOSTNAME    "my-esp32"
-
-// Debug tag for log statements
-static const char *TAG = "wifi idf test";
-
-// Tracks the number of retries for connecting to Wifi
-static int wifi_retry_count = 0;
+// Hostname for mDNS service. "esp32-light-control" becomes http://esp32-light-control.local/
+// Might make this configurable in the future in case there are more
+// than one device on the same network
+#define ESP_HOSTNAME    "esp32-light-control"
 
 // Saves the current state of the lights
 static light_info_t light_data[4];
 
-// Flags to track if wifi is connected and to trigger a reconnect if new data is entered
+// Flags to track if wifi and mqtt status
 static uint8_t wifi_connected = 0;
 static uint8_t new_wifi_info = 0;
 static uint8_t ap_mode = 0;
@@ -80,10 +84,13 @@ static uint8_t new_mqtt_info = 0;
 static char esp_wifi_sta_ssid[WIFI_SSID_LENGTH] = "";
 static char esp_wifi_sta_pass[WIFI_PASS_LENGTH] = "";
 
+// Saves the current IP address of the ESP32
 static char esp_wifi_ip_addr[16] = "";
 
+// Saves the MQTT broker URI
+// And declares the MQTT client so MQTT messages can be sent by any function
 static char mqtt_broker_uri[257] = "";
-esp_mqtt_client_handle_t mqtt_client;
+static esp_mqtt_client_handle_t mqtt_client;
 
 // Struct to store authorization details for OTA
 typedef struct
@@ -103,10 +110,14 @@ static basic_auth_info_t auth_info =
 
 char auth_buffer[512];
 
-//Read HTML files into char arrays
+// Read HTML files into char arrays
 extern const char html_ota[] asm("_binary_ota_html_start");
 extern const char html_index[] asm("_binary_index_html_start");
 
+// Sets the config payload MQTT message
+// This message is sent to Home Assistant to automatically configure the lights
+// Moved this to a separate function so it can be changed when the light name is changed
+// or when the light is enabled/disabled
 static void set_mqtt_config_payload(uint8_t light_num)
 {
     if (light_data[light_num].enabled == 1) {
@@ -127,6 +138,11 @@ static void set_mqtt_config_payload(uint8_t light_num)
     }
 }
 
+// Every time a light is set whether it is from the web interface or
+// from Home Assistant through MQTT, a few things need to happen:
+//    - The PWM output needs to be changed
+//    - The new duty_cycle needs to be saved
+//    - If MQTT is connected, a status update needs to be sent to Home Assistant
 static void set_light(uint8_t num, uint8_t brightness) {
     if (num < 4) {
         ESP_LOGI(TAG, "Setting light%d to %d", num, brightness);
@@ -298,9 +314,12 @@ static esp_err_t index_get_handler( httpd_req_t *req )
 }
 
 // Post handler for index page
-// Depending on the content of the request:
-// - Turns on/off the LED
-// - Updates the wifi data
+// Reads and decodes the content of the request which is in JSON format
+// Depending on the request, it will either:
+//  - Change the brightness of a light
+//  - Save new Wifi info
+//  - Save new light info
+//  - Save new MQTT info
 static esp_err_t index_post_handler( httpd_req_t *req )
 {
     ESP_LOGI(TAG, "Received index POST request\n");
@@ -349,6 +368,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
         strncpy(token_str, content+json_content[1].start, token_len);
         token_str[token_len] = '\0';
 
+        // Message for changing a light value
         if (strcmp(token_str, "light") == 0) {
             if (num_tokens != 5) {
                 ESP_LOGI(TAG, "Wrong number of tokens for light message!");
@@ -392,6 +412,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                 }
             }
         }
+        // Message for saving Wifi info
         else if (strcmp(token_str, "ssid") == 0) {
             if (num_tokens != 5) {
                 ESP_LOGI(TAG, "Wrong number of tokens for Wifi message!");
@@ -441,6 +462,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                 }
             }
         }
+        // Message for saving MQTT info
         else if (strcmp(token_str, "mqtt_broker") == 0) {
             if (num_tokens != 3) {
                 ESP_LOGI(TAG, "Wrong number of tokens for MQTT message!");
@@ -463,6 +485,7 @@ static esp_err_t index_post_handler( httpd_req_t *req )
                 }
             }
         }
+        // Message for saving lights info
         else if (strcmp(token_str, "light0_name") == 0) {
             if (num_tokens != 17) {
                 ESP_LOGI(TAG, "Wrong number of tokens for light setup message!");
@@ -552,6 +575,8 @@ static esp_err_t index_post_handler( httpd_req_t *req )
     return ESP_OK;
 }
 
+// The website is set up to request a status update every 2 seconds
+// This function provides that update in JSON format
 static esp_err_t status_update_handler( httpd_req_t *req )
 {
     char json_data[1024];
@@ -757,7 +782,8 @@ static void initialise_mdns(void)
 // The wifi task intializes the wifi interface and attempts to connect in station
 // mode if wifi info is saved. If no info is saved or the connection fails, it
 // defaults back to AP mode. If new wifi data is entered, it will attempt to 
-// connect in station mode again
+// connect in station mode again. While in AP mode, if no stations are connected,
+// it will re-attempt to connect in station mode about every 60 seconds
 static void wifi_task( void *Param )
 {
     ESP_LOGI(TAG,  "Wifi task starting\n" );
@@ -924,6 +950,16 @@ static void ota_task(void *Param)
     }
 }
 
+// Event handler for MQTT. Important events handled include:
+//  - MQTT_EVENT_CONNECTED
+//      - Sets the mqtt_connected flag to 1
+//      - Publishes the config message for each light to auto-config in Home Assistant
+//      - Subscribes to the command topic for each light
+//      - Sends the initial state topic for each light
+//  - MQTT_EVENT_DISCONNECTED
+//      - Sets the mqtt_connected flag to 0
+//  - MQTT_EVENT_DATA
+//      - If the topic matches one of the command topics, read the JSON data and set the light
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
@@ -1058,6 +1094,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
+// MQTT task
+// Sets up the MQTT configuration and connects to the MQTT broker
+// Reconfigures the client if a new broker is set
+// Retries to connect to the broker every 30 seconds if connection fails
 static void mqtt_task(void *Param)
 {
     ESP_LOGI(TAG, "Starting MQTT task");
@@ -1101,6 +1141,8 @@ static void mqtt_task(void *Param)
     }
 }
 
+// Function to initalize many of the global variables
+// Some of the values are read from NVS if available
 static void initialize_data()
 {
     //Read MAC address
@@ -1155,9 +1197,10 @@ void app_main( void )
     // Initialize LED outputs
     lights_ledc_init();
 
+    // Initialize global variables
     initialize_data();
   
-    // Start wifi and ota tasks
+    // Start wifi, ota, and mqtt tasks
     xTaskCreate( wifi_task, "wifi_task", 4096, NULL, 0, NULL );
     xTaskCreate( ota_task, "ota_task", 8192, NULL, 5, NULL);
     xTaskCreate( mqtt_task, "mqtt_task", 4096, NULL, 0, NULL);
@@ -1168,6 +1211,9 @@ void app_main( void )
         vTaskDelay( task_delay_ms / portTICK_RATE_MS);
         fflush(stdout);
         if (bootloop_timer == 30) {
+            // If program runs for 30 seconds, mark the app valid to prevent rollback
+            // After an OTA update, if the ESP resets before this function is called
+            // it will automatically roll back to the previous FW
             esp_ota_mark_app_valid_cancel_rollback();
             ESP_LOGI(TAG,  "Running for 30 seconds. Rollback canceled");
         }
